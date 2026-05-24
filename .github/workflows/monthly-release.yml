@@ -64,13 +64,12 @@ jobs:
           context: .
           file: ./Dockerfile
           pull: true
-          no-cache: true
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=monthly-release
+          cache-to: type=gha,mode=max,scope=monthly-release
           build-args: |
             OBSERVIUM_DOWNLOAD_URL=https://www.observium.org/observium-community-latest.tar.gz

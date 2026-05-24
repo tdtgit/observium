@@ -3,3 +3,5 @@
 README.md
 compose.yaml
 *.md
+data
+.DS_Store

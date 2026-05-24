@@ -1,8 +1,8 @@
-name: monthly-release
+name: weekly-release
 
 on:
   schedule:
-    - cron: '0 2 1 * *'
+    - cron: '18 0 * * 5'
   workflow_dispatch:
 
 permissions:
@@ -16,16 +16,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -78,7 +78,7 @@ jobs:
 
       - name: Build and push
         if: github.event_name == 'workflow_dispatch' || steps.dockerhub.outputs.exists != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -88,7 +88,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.version }}
-          cache-from: type=gha,scope=monthly-release
-          cache-to: type=gha,mode=max,scope=monthly-release
+          cache-from: type=gha,scope=weekly-release
+          cache-to: type=gha,mode=max,scope=weekly-release
           build-args: |
             OBSERVIUM_DOWNLOAD_URL=https://www.observium.org/observium-community-latest.tar.gz

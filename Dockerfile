@@ -1,4 +1,6 @@
-FROM debian:13-slim
+# syntax=docker/dockerfile:1.7
+
+FROM debian:13-slim AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG OBSERVIUM_DOWNLOAD_URL="https://www.observium.org/observium-community-latest.tar.gz"
@@ -21,7 +23,12 @@ ENV OBSERVIUM_HOME=/opt/observium \
     OBSERVIUM_CREATE_ADMIN=false \
     OBSERVIUM_CREATE_DEFAULT_DASHBOARD=true
 
-RUN apt-get update \
+RUN rm -f /etc/apt/apt.conf.d/docker-clean \
+    && echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
@@ -62,8 +69,18 @@ RUN apt-get update \
       whois \
     && rm -rf /var/lib/apt/lists/*
 
+FROM base AS observium-src
+
+ARG OBSERVIUM_DOWNLOAD_URL="https://www.observium.org/observium-community-latest.tar.gz"
+
 RUN mkdir -p "${OBSERVIUM_HOME}" \
-    && curl -fsSL "${OBSERVIUM_DOWNLOAD_URL}" | tar -xz --strip-components=1 -C "${OBSERVIUM_HOME}" \
+    && curl -fsSL "${OBSERVIUM_DOWNLOAD_URL}" | tar -xz --strip-components=1 -C "${OBSERVIUM_HOME}"
+
+FROM base
+
+COPY --from=observium-src /opt/observium /opt/observium
+
+RUN mkdir -p "${OBSERVIUM_HOME}" \
     && mkdir -p "${OBSERVIUM_HOME}/logs" "${OBSERVIUM_HOME}/rrd" \
     && chown -R www-data:www-data "${OBSERVIUM_HOME}/logs" "${OBSERVIUM_HOME}/rrd" \
     && sed -i 's|^mibs :$|mibs : /opt/observium/mibs/rfc:/opt/observium/mibs/net-snmp|' /etc/snmp/snmp.conf \

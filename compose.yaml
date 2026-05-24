@@ -1,0 +1,46 @@
+services:
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: observium
+      MARIADB_USER: observium
+      MARIADB_PASSWORD: observium
+      MARIADB_ROOT_PASSWORD: observium-root
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-uroot", "-pobservium-root"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  observium:
+    build:
+      context: .
+    image: observium:debian13
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    environment:
+      OBSERVIUM_DB_HOST: db
+      OBSERVIUM_DB_NAME: observium
+      OBSERVIUM_DB_USER: observium
+      OBSERVIUM_DB_PASSWORD: observium
+      OBSERVIUM_INIT_DB_SCHEMA: "true"
+      OBSERVIUM_CREATE_ADMIN: "true"
+      OBSERVIUM_ADMIN_USER: admin
+      OBSERVIUM_ADMIN_PASSWORD: admin
+      OBSERVIUM_ADMIN_LEVEL: "10"
+      OBSERVIUM_ENABLE_CRON: "true"
+    volumes:
+      - observium-rrd:/opt/observium/rrd
+      - observium-logs:/opt/observium/logs
+
+volumes:
+  db-data:
+  observium-rrd:
+  observium-logs:

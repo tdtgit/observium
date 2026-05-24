@@ -10,6 +10,13 @@ OBSERVIUM_DB_USER="${OBSERVIUM_DB_USER:-observium}"
 OBSERVIUM_DB_PASSWORD="${OBSERVIUM_DB_PASSWORD:-observium}"
 OBSERVIUM_DB_EXTENSION="${OBSERVIUM_DB_EXTENSION:-mysqli}"
 OBSERVIUM_BASE_URL="${OBSERVIUM_BASE_URL:-}"
+OBSERVIUM_ENABLE_FASTCACHE="${OBSERVIUM_ENABLE_FASTCACHE:-true}"
+OBSERVIUM_CACHE_DRIVER="${OBSERVIUM_CACHE_DRIVER:-apcu}"
+OBSERVIUM_PHP_MEMORY_LIMIT="${OBSERVIUM_PHP_MEMORY_LIMIT:-512M}"
+OBSERVIUM_APCU_SHM_SIZE="${OBSERVIUM_APCU_SHM_SIZE:-128M}"
+OBSERVIUM_ENABLE_RAMDISK="${OBSERVIUM_ENABLE_RAMDISK:-false}"
+OBSERVIUM_RAMDISK_PATH="${OBSERVIUM_RAMDISK_PATH:-/dev/shm/observium-rrd}"
+OBSERVIUM_RAMDISK_SYNC_INTERVAL="${OBSERVIUM_RAMDISK_SYNC_INTERVAL:-300}"
 OBSERVIUM_ENABLE_CRON="${OBSERVIUM_ENABLE_CRON:-true}"
 OBSERVIUM_INIT_DB_SCHEMA="${OBSERVIUM_INIT_DB_SCHEMA:-false}"
 OBSERVIUM_CREATE_ADMIN="${OBSERVIUM_CREATE_ADMIN:-false}"
@@ -18,6 +25,7 @@ OBSERVIUM_ADMIN_PASSWORD="${OBSERVIUM_ADMIN_PASSWORD:-}"
 OBSERVIUM_ADMIN_LEVEL="${OBSERVIUM_ADMIN_LEVEL:-10}"
 OBSERVIUM_CREATE_DEFAULT_DASHBOARD="${OBSERVIUM_CREATE_DEFAULT_DASHBOARD:-true}"
 OBSERVIUM_DASHBOARD_USER="${OBSERVIUM_DASHBOARD_USER:-${OBSERVIUM_ADMIN_USER:-}}"
+OBSERVIUM_RRD_DIR="${OBSERVIUM_HOME}/rrd"
 
 log() {
   printf '[entrypoint] %s\n' "$*"
@@ -40,13 +48,20 @@ prepare_config() {
 \$config['db_pass']      = '${OBSERVIUM_DB_PASSWORD}';
 \$config['db_name']      = '${OBSERVIUM_DB_NAME}';
 \$config['install_dir']  = '${OBSERVIUM_HOME}';
-\$config['rrd_dir']      = '${OBSERVIUM_HOME}/rrd';
+\$config['rrd_dir']      = '${OBSERVIUM_RRD_DIR}';
 \$config['log_dir']      = '${OBSERVIUM_HOME}/logs';
 // Avoid empty host in generated URLs when running behind containerized web servers.
 \$__obs_scheme = (!empty(\$_SERVER['HTTPS']) && \$_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
 \$__obs_host = \$_SERVER['HTTP_HOST'] ?? (\$_SERVER['SERVER_NAME'] ?? 'localhost');
 \$config['base_url'] = \$__obs_scheme . '://' . \$__obs_host;
 EOCFG
+
+  if [[ "${OBSERVIUM_ENABLE_FASTCACHE}" == "true" ]]; then
+    cat >> "${CONFIG_FILE}" <<EOCFG
+\$config['cache']['enable'] = TRUE;
+\$config['cache']['driver'] = '${OBSERVIUM_CACHE_DRIVER}';
+EOCFG
+  fi
 
   if [[ -n "${OBSERVIUM_BASE_URL}" ]]; then
     cat >> "${CONFIG_FILE}" <<EOCFG
@@ -59,6 +74,59 @@ EOCFG
 EOCFG
 
   chown -R www-data:www-data "${OBSERVIUM_HOME}/logs" "${OBSERVIUM_HOME}/rrd"
+}
+
+configure_php_runtime() {
+  mkdir -p /tmp/php-opcache
+  chmod 1777 /tmp/php-opcache
+
+  cat > /etc/php/8.5/fpm/conf.d/99-observium-tuning.ini <<EOCFG
+memory_limit=${OBSERVIUM_PHP_MEMORY_LIMIT}
+opcache.enable=1
+opcache.enable_cli=1
+opcache.file_cache=/tmp/php-opcache
+apc.enable_cli=1
+apc.shm_size=${OBSERVIUM_APCU_SHM_SIZE}
+EOCFG
+
+  cp /etc/php/8.5/fpm/conf.d/99-observium-tuning.ini /etc/php/8.5/cli/conf.d/99-observium-tuning.ini
+}
+
+setup_rrd_ramdisk() {
+  if [[ "${OBSERVIUM_ENABLE_RAMDISK}" != "true" ]]; then
+    return
+  fi
+
+  if [[ "${OBSERVIUM_RAMDISK_PATH}" == "${OBSERVIUM_HOME}/rrd" ]]; then
+    log "OBSERVIUM_RAMDISK_PATH points to the persistent RRD path; disabling RAM disk mode"
+    return
+  fi
+
+  OBSERVIUM_RRD_DIR="${OBSERVIUM_RAMDISK_PATH}"
+  mkdir -p "${OBSERVIUM_RAMDISK_PATH}" "${OBSERVIUM_HOME}/rrd"
+  chown -R www-data:www-data "${OBSERVIUM_RAMDISK_PATH}" "${OBSERVIUM_HOME}/rrd"
+
+  # Warm the RAM disk from persistent storage.
+  if [[ -n "$(ls -A "${OBSERVIUM_HOME}/rrd" 2>/dev/null)" ]]; then
+    rsync -a --delete "${OBSERVIUM_HOME}/rrd"/ "${OBSERVIUM_RAMDISK_PATH}/"
+  fi
+
+  log "RRD RAM disk enabled at ${OBSERVIUM_RAMDISK_PATH}; persistent copy remains at ${OBSERVIUM_HOME}/rrd"
+}
+
+start_rrd_ramdisk_sync() {
+  if [[ "${OBSERVIUM_ENABLE_RAMDISK}" != "true" ]]; then
+    return
+  fi
+
+  (
+    while true; do
+      sleep "${OBSERVIUM_RAMDISK_SYNC_INTERVAL}"
+      rsync -a --delete "${OBSERVIUM_RAMDISK_PATH}/" "${OBSERVIUM_HOME}/rrd/" || true
+    done
+  ) &
+
+  log "Started RAM disk sync loop every ${OBSERVIUM_RAMDISK_SYNC_INTERVAL}s"
 }
 
 init_db_schema() {
@@ -80,8 +148,25 @@ create_admin_user() {
     return
   fi
 
-  log "Attempting to create initial admin user '${OBSERVIUM_ADMIN_USER}'"
-  (cd "${OBSERVIUM_HOME}" && ./adduser.php "${OBSERVIUM_ADMIN_USER}" "${OBSERVIUM_ADMIN_PASSWORD}" "${OBSERVIUM_ADMIN_LEVEL}") || true
+  local existing_user_id
+  existing_user_id="$(mysql_exec "SELECT user_id FROM users WHERE username='$(sql_escape "${OBSERVIUM_ADMIN_USER}")' LIMIT 1;" || true)"
+  if [[ -n "${existing_user_id}" ]]; then
+    log "Admin user '${OBSERVIUM_ADMIN_USER}' already exists; skipping creation"
+    return
+  fi
+
+  local new_user_id password_hash user_escaped pass_escaped level_value
+  new_user_id="$(next_numeric_id users user_id)"
+  password_hash="$(php -r 'echo password_hash($argv[1], PASSWORD_BCRYPT);' "${OBSERVIUM_ADMIN_PASSWORD}")"
+  user_escaped="$(sql_escape "${OBSERVIUM_ADMIN_USER}")"
+  pass_escaped="$(sql_escape "${password_hash}")"
+  level_value="${OBSERVIUM_ADMIN_LEVEL}"
+  if ! [[ "${level_value}" =~ ^[0-9]+$ ]]; then
+    level_value="10"
+  fi
+
+  mysql_exec "INSERT INTO users (user_id, username, password, realname, email, descr, level, can_modify_passwd, user_options, type) VALUES (${new_user_id}, '${user_escaped}', '${pass_escaped}', '${user_escaped}', '', '', ${level_value}, 1, NULL, 'mysql');"
+  log "Created initial admin user '${OBSERVIUM_ADMIN_USER}' (user_id=${new_user_id})"
 }
 
 start_cron_if_enabled() {
@@ -107,6 +192,12 @@ mysql_exec() {
     -e "$1"
 }
 
+next_numeric_id() {
+  local table="$1"
+  local column="$2"
+  mysql_exec "SELECT COALESCE(MAX(${column}), -1) + 1 FROM ${table};"
+}
+
 create_default_dashboard() {
   if [[ "${OBSERVIUM_CREATE_DEFAULT_DASHBOARD}" != "true" ]]; then
     return
@@ -128,24 +219,41 @@ create_default_dashboard() {
 
   dash_id="$(mysql_exec "SELECT dash_id FROM dashboards WHERE user_id=${user_id} ORDER BY dash_id ASC LIMIT 1;" || true)"
   if [[ -z "${dash_id}" ]]; then
-    dash_id="$(mysql_exec "INSERT INTO dashboards (user_id, dash_name, descr, dash_order, created_by, updated_by, slug, is_public) VALUES (${user_id}, 'Default Dashboard', 'Autogenerated default dashboard', 0, ${user_id}, ${user_id}, NULL, 0) RETURNING dash_id;")"
+    dash_id="$(next_numeric_id dashboards dash_id)"
+    mysql_exec "INSERT INTO dashboards (dash_id, user_id, dash_name, descr, dash_order, created_by, updated_by, slug, is_public) VALUES (${dash_id}, ${user_id}, 'Default Dashboard', 'Autogenerated default dashboard', 0, ${user_id}, ${user_id}, NULL, 0);" || {
+      log "Failed to create default dashboard for user '${OBSERVIUM_DASHBOARD_USER}'"
+      return
+    }
     log "Created default dashboard ${dash_id} for user '${OBSERVIUM_DASHBOARD_USER}'"
   fi
 
   widget_count="$(mysql_exec "SELECT COUNT(*) FROM dash_widgets WHERE dash_id=${dash_id};" || true)"
   if [[ "${widget_count:-0}" == "0" ]]; then
+    local next_widget_id
+    next_widget_id="$(next_numeric_id dash_widgets widget_id)"
     # Seed a classic Observium-style default layout (map + alerts + summary/log widgets).
-    mysql_exec "INSERT INTO dash_widgets (dash_id, widget_type, widget_config, x, y, width, height) VALUES (${dash_id}, 'welcome', '{}', 6, 0, 12, 3);"
-    mysql_exec "INSERT INTO dash_widgets (dash_id, widget_type, widget_config, x, y, width, height) VALUES (${dash_id}, 'map', '{}', 0, 3, 6, 7);"
-    mysql_exec "INSERT INTO dash_widgets (dash_id, widget_type, widget_config, x, y, width, height) VALUES (${dash_id}, 'status_summary', '{}', 6, 3, 6, 7);"
-    mysql_exec "INSERT INTO dash_widgets (dash_id, widget_type, widget_config, x, y, width, height) VALUES (${dash_id}, 'alert_boxes', '{}', 0, 10, 12, 3);"
-    mysql_exec "INSERT INTO dash_widgets (dash_id, widget_type, widget_config, x, y, width, height) VALUES (${dash_id}, 'eventlog', '{}', 0, 13, 6, 9);"
-    mysql_exec "INSERT INTO dash_widgets (dash_id, widget_type, widget_config, x, y, width, height) VALUES (${dash_id}, 'alertlog', '{}', 6, 13, 6, 9);"
+    mysql_exec "INSERT INTO dash_widgets (widget_id, dash_id, widget_type, widget_config, x, y, width, height) VALUES (${next_widget_id}, ${dash_id}, 'welcome', '{}', 6, 0, 12, 3);"
+    next_widget_id=$((next_widget_id + 1))
+    mysql_exec "INSERT INTO dash_widgets (widget_id, dash_id, widget_type, widget_config, x, y, width, height) VALUES (${next_widget_id}, ${dash_id}, 'map', '{}', 0, 3, 6, 7);"
+    next_widget_id=$((next_widget_id + 1))
+    mysql_exec "INSERT INTO dash_widgets (widget_id, dash_id, widget_type, widget_config, x, y, width, height) VALUES (${next_widget_id}, ${dash_id}, 'status_summary', '{}', 6, 3, 6, 7);"
+    next_widget_id=$((next_widget_id + 1))
+    mysql_exec "INSERT INTO dash_widgets (widget_id, dash_id, widget_type, widget_config, x, y, width, height) VALUES (${next_widget_id}, ${dash_id}, 'alert_boxes', '{}', 0, 10, 12, 3);"
+    next_widget_id=$((next_widget_id + 1))
+    mysql_exec "INSERT INTO dash_widgets (widget_id, dash_id, widget_type, widget_config, x, y, width, height) VALUES (${next_widget_id}, ${dash_id}, 'eventlog', '{}', 0, 13, 6, 9);"
+    next_widget_id=$((next_widget_id + 1))
+    mysql_exec "INSERT INTO dash_widgets (widget_id, dash_id, widget_type, widget_config, x, y, width, height) VALUES (${next_widget_id}, ${dash_id}, 'alertlog', '{}', 6, 13, 6, 9);"
     log "Seeded classic dashboard widgets for dashboard ${dash_id}"
   fi
 
-  mysql_exec "DELETE FROM users_prefs WHERE user_id=${user_id} AND pref='dashboard_default';"
-  mysql_exec "INSERT INTO users_prefs (user_id, pref, value) VALUES (${user_id}, 'dashboard_default', '${dash_id}');"
+  local pref_id
+  pref_id="$(mysql_exec "SELECT pref_id FROM users_prefs WHERE user_id=${user_id} AND pref='dashboard_default' LIMIT 1;" || true)"
+  if [[ -n "${pref_id}" ]]; then
+    mysql_exec "UPDATE users_prefs SET value='${dash_id}' WHERE pref_id=${pref_id};"
+  else
+    pref_id="$(next_numeric_id users_prefs pref_id)"
+    mysql_exec "INSERT INTO users_prefs (pref_id, user_id, pref, value) VALUES (${pref_id}, ${user_id}, 'dashboard_default', '${dash_id}');"
+  fi
 }
 
 start_php_fpm() {
@@ -158,12 +266,15 @@ is_nginx_foreground() {
 }
 
 if is_nginx_foreground "$@"; then
+  configure_php_runtime
+  setup_rrd_ramdisk
   prepare_config
   init_db_schema
   create_admin_user
   create_default_dashboard
   start_php_fpm
   start_cron_if_enabled
+  start_rrd_ramdisk_sync
 fi
 
 exec "$@"

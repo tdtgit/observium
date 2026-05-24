@@ -2,13 +2,16 @@ services:
   db:
     image: mariadb:11
     restart: unless-stopped
+    command:
+      - mariadbd
+      - ${MARIADB_BINLOG_OPTION:---skip-log-bin}
     environment:
       MARIADB_DATABASE: observium
       MARIADB_USER: observium
       MARIADB_PASSWORD: observium
       MARIADB_ROOT_PASSWORD: observium-root
     volumes:
-      - db-data:/var/lib/mysql
+      - ./data/db:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-uroot", "-pobservium-root"]
       interval: 10s
@@ -16,31 +19,32 @@ services:
       retries: 10
 
   observium:
-    build:
-      context: .
-    image: observium:debian13
+    image: ${OBSERVIUM_IMAGE:-tuantuantuantuantuan/observium}
     restart: unless-stopped
+    shm_size: ${OBSERVIUM_SHM_SIZE:-256m}
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8080:80"
     environment:
-      OBSERVIUM_DB_HOST: db
-      OBSERVIUM_DB_NAME: observium
-      OBSERVIUM_DB_USER: observium
-      OBSERVIUM_DB_PASSWORD: observium
-      OBSERVIUM_INIT_DB_SCHEMA: "true"
-      OBSERVIUM_CREATE_ADMIN: "true"
-      OBSERVIUM_ADMIN_USER: admin
-      OBSERVIUM_ADMIN_PASSWORD: admin
-      OBSERVIUM_ADMIN_LEVEL: "10"
-      OBSERVIUM_ENABLE_CRON: "true"
+      OBSERVIUM_DB_HOST: ${OBSERVIUM_DB_HOST:-db}
+      OBSERVIUM_DB_NAME: ${OBSERVIUM_DB_NAME:-observium}
+      OBSERVIUM_DB_USER: ${OBSERVIUM_DB_USER:-observium}
+      OBSERVIUM_DB_PASSWORD: ${OBSERVIUM_DB_PASSWORD:-observium}
+      OBSERVIUM_INIT_DB_SCHEMA: ${OBSERVIUM_INIT_DB_SCHEMA:-true}
+      OBSERVIUM_CREATE_ADMIN: ${OBSERVIUM_CREATE_ADMIN:-true}
+      OBSERVIUM_ADMIN_USER: ${OBSERVIUM_ADMIN_USER:-admin}
+      OBSERVIUM_ADMIN_PASSWORD: ${OBSERVIUM_ADMIN_PASSWORD:-admin}
+      OBSERVIUM_ADMIN_LEVEL: ${OBSERVIUM_ADMIN_LEVEL:-10}
+      OBSERVIUM_ENABLE_CRON: ${OBSERVIUM_ENABLE_CRON:-true}
+      OBSERVIUM_ENABLE_FASTCACHE: ${OBSERVIUM_ENABLE_FASTCACHE:-true}
+      OBSERVIUM_CACHE_DRIVER: ${OBSERVIUM_CACHE_DRIVER:-apcu}
+      OBSERVIUM_PHP_MEMORY_LIMIT: ${OBSERVIUM_PHP_MEMORY_LIMIT:-512M}
+      OBSERVIUM_APCU_SHM_SIZE: ${OBSERVIUM_APCU_SHM_SIZE:-128M}
+      OBSERVIUM_ENABLE_RAMDISK: ${OBSERVIUM_ENABLE_RAMDISK:-false}
+      OBSERVIUM_RAMDISK_PATH: ${OBSERVIUM_RAMDISK_PATH:-/dev/shm/observium-rrd}
+      OBSERVIUM_RAMDISK_SYNC_INTERVAL: ${OBSERVIUM_RAMDISK_SYNC_INTERVAL:-300}
     volumes:
-      - observium-rrd:/opt/observium/rrd
-      - observium-logs:/opt/observium/logs
-
-volumes:
-  db-data:
-  observium-rrd:
-  observium-logs:
+      - ./data/rrd:/opt/observium/rrd
+      - ./data/logs:/opt/observium/logs

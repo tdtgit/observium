@@ -9,6 +9,13 @@ ENV OBSERVIUM_HOME=/opt/observium \
     OBSERVIUM_DB_USER=observium \
     OBSERVIUM_DB_PASSWORD=observium \
     OBSERVIUM_DB_EXTENSION=mysqli \
+    OBSERVIUM_ENABLE_FASTCACHE=true \
+    OBSERVIUM_CACHE_DRIVER=apcu \
+    OBSERVIUM_PHP_MEMORY_LIMIT=512M \
+    OBSERVIUM_APCU_SHM_SIZE=128M \
+    OBSERVIUM_ENABLE_RAMDISK=false \
+    OBSERVIUM_RAMDISK_PATH=/dev/shm/observium-rrd \
+    OBSERVIUM_RAMDISK_SYNC_INTERVAL=300 \
     OBSERVIUM_ENABLE_CRON=true \
     OBSERVIUM_INIT_DB_SCHEMA=false \
     OBSERVIUM_CREATE_ADMIN=false \
@@ -47,6 +54,7 @@ RUN apt-get update \
       python3-mysqldb \
       python3-pymysql \
       rrdtool \
+      rsync \
       snmp \
       subversion \
       tini \

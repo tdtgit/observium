@@ -40,7 +40,11 @@ jobs:
       - name: Resolve upstream version
         id: tags
         run: |
-          version="$(curl -fsSL https://www.observium.org/observium-community-latest.tar.gz | tar -xzO observium/includes/definitions/version.inc.php | sed -n "s/.*OBSERVIUM_VERSION_LONG', '\([^']*\)'.*/\1/p")"
+          version="$(
+            curl -fsSL https://www.observium.org/observium-community-latest.tar.gz \
+              | tar --fast-read -xzOf - observium/includes/definitions/version.inc.php \
+              | awk -F"'" '/OBSERVIUM_VERSION_LONG/ {print $4; exit}'
+          )"
           if [ -z "$version" ]; then
             echo "Failed to resolve Observium upstream version" >&2
             exit 1

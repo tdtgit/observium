@@ -4,13 +4,6 @@ on:
   schedule:
     - cron: '0 2 1 * *'
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - Dockerfile
-      - docker/**
-      - .github/workflows/monthly-release.yml
 
 permissions:
   contents: read
@@ -58,7 +51,33 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Check if version exists on Docker Hub
+        id: dockerhub
+        run: |
+          image_tag="${IMAGE_NAME}:${{ steps.tags.outputs.version }}"
+          if docker manifest inspect "$image_tag" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub tag already exists: $image_tag"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub tag does not exist yet: $image_tag"
+          fi
+
+      - name: Decide publish behavior
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "version=${{ steps.tags.outputs.version }}"
+          echo "dockerhub_tag_exists=${{ steps.dockerhub.outputs.exists }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual run: build and push is forced."
+          elif [ "${{ steps.dockerhub.outputs.exists }}" = "true" ]; then
+            echo "Scheduled run: tag exists, skip build/push."
+          else
+            echo "Scheduled run: tag missing, build and push."
+          fi
+
       - name: Build and push
+        if: github.event_name == 'workflow_dispatch' || steps.dockerhub.outputs.exists != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .

@@ -9,10 +9,96 @@ permissions:
   contents: read
 
 jobs:
-  build-and-publish:
+  release-gate:
     runs-on: ubuntu-latest
     env:
       IMAGE_NAME: tuantuantuantuantuan/observium
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dockerhub_tag_exists: ${{ steps.dockerhub.outputs.exists }}
+      should_publish: ${{ steps.decision.outputs.should_publish }}
+      decision_reason: ${{ steps.decision.outputs.reason }}
+
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve upstream version
+        id: version
+        run: |
+          tar_args=(-xzOf - observium/includes/definitions/version.inc.php)
+          if tar --help 2>&1 | grep -q -- '--fast-read'; then
+            tar_args=(--fast-read "${tar_args[@]}")
+          elif tar --help 2>&1 | grep -q -- '--occurrence'; then
+            tar_args=(--occurrence=1 "${tar_args[@]}")
+          fi
+
+          version="$(
+            curl -fsSL https://www.observium.org/observium-community-latest.tar.gz \
+              | tar "${tar_args[@]}" \
+              | awk -F"'" '/OBSERVIUM_VERSION_LONG/ {print $4; exit}'
+          )"
+
+          if [ -z "$version" ]; then
+            echo "Failed to resolve Observium upstream version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check if version exists on Docker Hub
+        id: dockerhub
+        run: |
+          image_tag="${IMAGE_NAME}:${{ steps.version.outputs.version }}"
+          if docker manifest inspect "$image_tag" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub tag already exists: $image_tag"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub tag does not exist yet: $image_tag"
+          fi
+
+      - name: Decide publish behavior
+        id: decision
+        run: |
+          should_publish=false
+          reason="scheduled-tag-exists"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            should_publish=true
+            reason="manual-force"
+          elif [ "${{ steps.dockerhub.outputs.exists }}" != "true" ]; then
+            should_publish=true
+            reason="scheduled-tag-missing"
+          fi
+
+          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+
+          echo "event=${{ github.event_name }}"
+          echo "version=${{ steps.version.outputs.version }}"
+          echo "dockerhub_tag_exists=${{ steps.dockerhub.outputs.exists }}"
+          echo "should_publish=$should_publish"
+          echo "reason=$reason"
+
+  build:
+    runs-on: ubuntu-latest
+    needs: release-gate
+    if: needs.release-gate.outputs.should_publish == 'true'
+    env:
+      IMAGE_NAME: tuantuantuantuantuan/observium
+      OBSERVIUM_DOWNLOAD_URL: https://www.observium.org/observium-community-latest.tar.gz
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            platform_key: linux-amd64
+          - platform: linux/arm64
+            platform_key: linux-arm64
 
     steps:
       - name: Checkout
@@ -30,65 +116,170 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Resolve upstream version
-        id: tags
-        run: |
-          tar_args=(-xzOf - observium/includes/definitions/version.inc.php)
-          if tar --help 2>&1 | grep -q -- '--fast-read'; then
-            tar_args=(--fast-read "${tar_args[@]}")
-          elif tar --help 2>&1 | grep -q -- '--occurrence'; then
-            tar_args=(--occurrence=1 "${tar_args[@]}")
-          fi
-
-          version="$(
-            curl -fsSL https://www.observium.org/observium-community-latest.tar.gz \
-              | tar "${tar_args[@]}" \
-              | awk -F"'" '/OBSERVIUM_VERSION_LONG/ {print $4; exit}'
-          )"
-          if [ -z "$version" ]; then
-            echo "Failed to resolve Observium upstream version" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Check if version exists on Docker Hub
-        id: dockerhub
-        run: |
-          image_tag="${IMAGE_NAME}:${{ steps.tags.outputs.version }}"
-          if docker manifest inspect "$image_tag" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Docker Hub tag already exists: $image_tag"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Docker Hub tag does not exist yet: $image_tag"
-          fi
-
-      - name: Decide publish behavior
-        run: |
-          echo "event=${{ github.event_name }}"
-          echo "version=${{ steps.tags.outputs.version }}"
-          echo "dockerhub_tag_exists=${{ steps.dockerhub.outputs.exists }}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual run: build and push is forced."
-          elif [ "${{ steps.dockerhub.outputs.exists }}" = "true" ]; then
-            echo "Scheduled run: tag exists, skip build/push."
-          else
-            echo "Scheduled run: tag missing, build and push."
-          fi
-
-      - name: Build and push
-        if: github.event_name == 'workflow_dispatch' || steps.dockerhub.outputs.exists != 'true'
+      - name: Build and push by digest (${{ matrix.platform }})
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
           pull: true
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.version }}
-          cache-from: type=gha,scope=weekly-release
-          cache-to: type=gha,mode=max,scope=weekly-release
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=weekly-release-${{ matrix.platform_key }}
+          cache-to: type=gha,mode=max,scope=weekly-release-${{ matrix.platform_key }}
           build-args: |
-            OBSERVIUM_DOWNLOAD_URL=https://www.observium.org/observium-community-latest.tar.gz
+            OBSERVIUM_DOWNLOAD_URL=${{ env.OBSERVIUM_DOWNLOAD_URL }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.platform_key }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    runs-on: ubuntu-latest
+    needs:
+      - release-gate
+      - build
+    if: needs.release-gate.outputs.should_publish == 'true'
+    env:
+      IMAGE_NAME: tuantuantuantuantuan/observium
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Download digests
+        uses: actions/download-artifact@v5
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Create and push manifest
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+
+          digests=()
+          for digest_file in *; do
+            digests+=("${IMAGE_NAME}@sha256:${digest_file}")
+          done
+
+          docker buildx imagetools create \
+            -t "${IMAGE_NAME}:latest" \
+            -t "${IMAGE_NAME}:${{ needs.release-gate.outputs.version }}" \
+            "${digests[@]}"
+
+      - name: Inspect pushed image
+        run: |
+          docker buildx imagetools inspect "${IMAGE_NAME}:${{ needs.release-gate.outputs.version }}"
+
+  github-release:
+    runs-on: ubuntu-latest
+    needs:
+      - release-gate
+      - push
+    if: needs.release-gate.outputs.should_publish == 'true'
+    permissions:
+      contents: write
+    env:
+      IMAGE_NAME: tuantuantuantuantuan/observium
+      VERSION: ${{ needs.release-gate.outputs.version }}
+
+    steps:
+      - name: Create or update GitHub release
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const imageName = process.env.IMAGE_NAME;
+            const tagName = `v${version}`;
+            const releaseName = `Observium Docker ${version}`;
+
+            const body = [
+              'Docker image published to Docker Hub.',
+              '',
+              `- Docker Hub: https://hub.docker.com/r/${imageName}`,
+              `- Stable tag: \`${imageName}:${version}\``,
+              `- Rolling tag: \`${imageName}:latest\``,
+              '',
+              'Pull commands:',
+              `- \`docker pull ${imageName}:${version}\``,
+              `- \`docker pull ${imageName}:latest\``
+            ].join('\n');
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            let release;
+            try {
+              const existing = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag: tagName
+              });
+              release = await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: existing.data.id,
+                tag_name: tagName,
+                target_commitish: context.sha,
+                name: releaseName,
+                body,
+                draft: false,
+                prerelease: false
+              });
+              core.info(`Updated release for tag ${tagName}`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tagName,
+                target_commitish: context.sha,
+                name: releaseName,
+                body,
+                draft: false,
+                prerelease: false,
+                generate_release_notes: false
+              });
+              core.info(`Created release for tag ${tagName}`);
+            }
+
+            core.setOutput('release_url', release.data.html_url);
+
+  summary:
+    runs-on: ubuntu-latest
+    needs:
+      - release-gate
+      - build
+      - push
+      - github-release
+    if: always()
+
+    steps:
+      - name: Print release decision summary
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "version=${{ needs.release-gate.outputs.version }}"
+          echo "dockerhub_tag_exists=${{ needs.release-gate.outputs.dockerhub_tag_exists }}"
+          echo "should_publish=${{ needs.release-gate.outputs.should_publish }}"
+          echo "decision_reason=${{ needs.release-gate.outputs.decision_reason }}"
+          echo "build_job_result=${{ needs.build.result }}"
+          echo "push_job_result=${{ needs.push.result }}"
+          echo "github_release_job_result=${{ needs.github-release.result }}"

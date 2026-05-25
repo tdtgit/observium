@@ -1,13 +1,22 @@
 # Observium Docker (Debian 13)
 
-Unofficial Docker image for **Observium Community Edition** using:
-- Debian 13
-- Nginx
-- PHP 8.5-FPM
-- MariaDB (in `compose.yaml`)
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-tuantuantuantuantuan%2Fobservium-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/tuantuantuantuantuan/observium)
+[![Base](https://img.shields.io/badge/Base-Debian%2013-A81D33)](#)
+[![Web](https://img.shields.io/badge/Web-Nginx%20%2B%20PHP--FPM-009639)](#)
+[![DB](https://img.shields.io/badge/DB-MariaDB%2011-003545)](#)
 
-Docker Hub image:
-- `tuantuantuantuantuan/observium:latest`
+Weekly workflow automation keeps Docker Hub up to date with both `:latest` and stable version tags like `:25.4.0`.
+
+Unofficial Docker image for **Observium Community Edition** with a simple local stack:
+- `observium` container: Nginx + PHP 8.5-FPM
+- `db` container: MariaDB 11
+- persistent data via local bind mounts
+
+## Quick Links
+
+- Docker Hub: [tuantuantuantuantuan/observium](https://hub.docker.com/r/tuantuantuantuantuan/observium)
+- Image tag used by default in `compose.yaml`: `tuantuantuantuantuan/observium:latest`
+- Stable version tags are also available: `tuantuantuantuantuan/observium:{version}`
 
 ## Quick Start
 
@@ -58,22 +67,24 @@ mkdir -p ./data/db ./data/rrd ./data/logs
 
 ## Configuration
 
-You can override settings with environment variables when starting Compose.
+Prefer editing env vars in `compose.yaml` (and optional `.env` values consumed by Compose), instead of injecting env vars directly into commands.
 
-Example (custom admin credentials):
+Example in `compose.yaml` (`services.observium.environment`):
 
-```bash
-OBSERVIUM_ADMIN_USER=netops \
-OBSERVIUM_ADMIN_PASSWORD='strong-password' \
-docker compose up -d
+```yaml
+services:
+  observium:
+    environment:
+      OBSERVIUM_ADMIN_USER: ${OBSERVIUM_ADMIN_USER:-netops}
+      OBSERVIUM_ADMIN_PASSWORD: ${OBSERVIUM_ADMIN_PASSWORD:-strong-password}
+      OBSERVIUM_ENABLE_RAMDISK: ${OBSERVIUM_ENABLE_RAMDISK:-true}
+      OBSERVIUM_SHM_SIZE: ${OBSERVIUM_SHM_SIZE:-8g}
+      OBSERVIUM_RAMDISK_SYNC_INTERVAL: ${OBSERVIUM_RAMDISK_SYNC_INTERVAL:-300}
 ```
 
-Example (enable RAM-disk RRD mode):
+Apply changes:
 
 ```bash
-OBSERVIUM_ENABLE_RAMDISK=true \
-OBSERVIUM_SHM_SIZE=8g \
-OBSERVIUM_RAMDISK_SYNC_INTERVAL=300 \
 docker compose up -d
 ```
 
@@ -176,9 +187,3 @@ Run compose with local image:
 ```bash
 OBSERVIUM_IMAGE=observium:debian13 docker compose up -d
 ```
-
-## CI/CD
-
-- Monthly image build workflow: `.github/workflows/monthly-release.yml`
-- Primary public tag used for manual build/push in this repo: `latest`
-- Versioned tags are handled by CI workflow

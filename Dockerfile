@@ -37,6 +37,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /etc/apt/keyrings/sury-php.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ trixie main" > /etc/apt/sources.list.d/sury-php.list \
     && apt-get update \
+    && apt-get -y dist-upgrade \
     && apt-get install -y --no-install-recommends \
       cron \
       fping \
@@ -63,10 +64,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       rrdtool \
       rsync \
       snmp \
-      subversion \
       tini \
       tzdata \
       whois \
+    && apt-get purge -y --auto-remove gnupg dirmngr \
     && rm -rf /var/lib/apt/lists/*
 
 FROM base AS observium-src

@@ -209,7 +209,7 @@ jobs:
             const version = process.env.VERSION;
             const imageName = process.env.IMAGE_NAME;
             const tagName = `v${version}`;
-            const releaseName = `Observium Docker ${version}`;
+            const releaseName = version;
 
             const body = [
               'Docker image published to Docker Hub.',

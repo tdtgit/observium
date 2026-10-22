@@ -35,6 +35,9 @@ Default login:
 - Username: `admin`
 - Password: `admin`
 
+To publish the web UI on a different host port, set `OBSERVIUM_HTTP_PORT` (for
+example in `.env`) and run `docker compose up -d` again.
+
 ### 2. Data Persistence
 
 This project uses bind mounts (host folders):
@@ -308,12 +311,63 @@ docker compose exec observium cat /etc/observium-components
 
 ## Release Automation
 
-Two workflows keep the published image current.
+Three workflows build, validate, and publish the image.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `upstream-release.yml` | weekly schedule, or manual dispatch | Resolves the upstream Observium version, builds `linux/amd64`, `linux/arm64`, and `linux/arm/v7`, pushes them by digest, and creates the Docker tags plus the GitHub release |
+| `upstream-release.yml` | weekly schedule, or manual dispatch | Resolves the upstream Observium version, builds `linux/amd64`, `linux/arm64`, and `linux/arm/v7`, pushes them by digest, boots the `linux/amd64` image with Compose as a smoke test, and only then creates the Docker tags plus the GitHub release |
 | `php-refresh.yml` | daily schedule, or manual dispatch | Compares the PHP version published in the image against the versions currently offered by the PHP repository, and triggers a release rebuild when they differ |
+| `pull-request.yml` | pull requests | Builds the pull request image and runs the same Compose smoke test against it |
+
+### Smoke test before publishing
+
+Between the build and the tag push, `upstream-release.yml` runs
+[`scripts/smoke-compose.sh`](scripts/smoke-compose.sh) against the exact
+`linux/amd64` image digest it is about to tag. The script boots the stack in a
+throwaway directory (empty database, no `./data` involved) and fails the release
+when any of these is not true:
+
+- both containers reach a healthy state and the web UI answers `HTTP 200`;
+- the `observium` container did not restart while starting, and the entrypoint
+  log contains no `ERROR`;
+- the schema import completed (`lower_case_table_names=1`,
+  `devices.device_id` is `AUTO_INCREMENT`, admin user and default dashboard
+  exist);
+- logging in with the configured admin credentials renders the dashboard;
+- two devices are added with the real `add_device.php` against test SNMP
+  agents (`scripts/snmpd/`, run as sidecars that are never published), get
+  distinct non-zero `device_id`s, and are removed again with
+  `delete_device.php` (including their RRD directories);
+- a second start of the entrypoint is idempotent: no duplicate-key failure, no
+  duplicate admin, dashboard, or widget rows, and the deleted devices stay
+  deleted.
+
+A failed smoke test stops the release, so no Docker tag and no GitHub release is
+created for an image that does not start. The arm64 and armhf images are not
+smoke tested (a full stack under QEMU is slow); their PHP versions are verified
+in the build job, and everything above the image is architecture independent.
+
+### Pull request checks
+
+`pull-request.yml` runs the same smoke test for every pull request, building the
+image from the pull request instead of pulling a digest.
+
+Contributor code is untrusted, so the workflow is deliberately constrained:
+
+- it runs on `pull_request`, **never** `pull_request_target`, so pull requests
+  from forks receive a read-only `GITHUB_TOKEN` and no repository secrets;
+- `permissions: contents: read`, and checkout credentials are disabled so the
+  token does not end up in `.git/config` where build scripts could read it;
+- nothing is pushed to a registry and no secrets are referenced, so a
+  contributor cannot publish an image or read credentials;
+- it only ever runs on GitHub-hosted ephemeral runners. Building a
+  contributor's Dockerfile and booting their `compose.yaml` is arbitrary code
+  execution on the runner, even though no secrets are reachable. Never route
+  this workflow to a self-hosted runner;
+- `concurrency` cancels superseded runs and `timeout-minutes` bounds a run.
+
+GitHub additionally requires a maintainer to approve the first workflow run from
+a new contributor, which is the default for public repositories.
 
 ### Tags and releases
 
@@ -415,3 +469,26 @@ Run compose with local image:
 ```bash
 OBSERVIUM_IMAGE=observium:debian13 docker compose up -d
 ```
+
+### Validate an image before publishing
+
+`scripts/smoke-compose.sh` boots the stack against any image reference and
+checks startup, login, schema, and restart idempotency. It runs in a temporary
+directory, so it always starts from an empty database and does not touch
+`./data`:
+
+```bash
+docker build -t observium:debian13 .
+scripts/smoke-compose.sh observium:debian13
+```
+
+It can also test an already published image, which is exactly what the weekly
+release does with the digest it built:
+
+```bash
+scripts/smoke-compose.sh tuantuantuantuantuan/observium:latest
+```
+
+Pass `--keep` to keep the temporary stack directory for inspection. The script
+picks a free host port unless `SMOKE_HTTP_PORT` is set, and logs in with
+`admin`/`admin` unless `SMOKE_ADMIN_USER`/`SMOKE_ADMIN_PASSWORD` are set.

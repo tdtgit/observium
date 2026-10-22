@@ -42,7 +42,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8080:80"
+      - "${OBSERVIUM_HTTP_PORT:-8080}:80"
     environment:
       OBSERVIUM_DB_HOST: ${OBSERVIUM_DB_HOST:-db}
       OBSERVIUM_DB_NAME: ${OBSERVIUM_DB_NAME:-observium}

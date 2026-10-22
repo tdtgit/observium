@@ -218,8 +218,21 @@ Two workflows keep the published image current.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `upstream-release.yml` | weekly schedule, or manual dispatch | Resolves the upstream Observium version, builds `linux/amd64` and `linux/arm64`, pushes both by digest, and creates the multi-arch `:latest` and `:{version}` tags |
+| `upstream-release.yml` | weekly schedule, or manual dispatch | Resolves the upstream Observium version, builds `linux/amd64` and `linux/arm64`, pushes both by digest, and creates the Docker tags plus the GitHub release |
 | `php-refresh.yml` | daily schedule, or manual dispatch | Compares the PHP version published in the image against the versions currently offered by the PHP repository, and triggers a release rebuild when they differ |
+
+### Tags and releases
+
+Releases are identified by **build date**, not by the upstream Observium version, so every publication shows up as new activity even when the Observium version itself has not changed. A second build on the same day gets a numeric suffix (`2026.10.22-2`).
+
+| Docker tag | Meaning |
+|---|---|
+| `:{date}` | immutable, one per build — use this to pin |
+| `:{version}` | current Observium version, moves when the image is rebuilt |
+| `:latest` | rolling |
+
+A release is created when the Observium version is new, or when a rebuild is triggered because the PHP version changed. Nothing is published when neither has changed.
+
 
 ### PHP version per architecture
 

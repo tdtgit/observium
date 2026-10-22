@@ -2,7 +2,7 @@
 # Print the PHP 8.5 candidate version available from the sury Debian repository.
 #
 # Usage:
-#   scripts/sury-php-version.sh <arch>      # e.g. amd64 | arm64
+#   scripts/sury-php-version.sh <arch>      # e.g. amd64 | arm64 | armhf
 #   scripts/sury-php-version.sh             # all architectures, one per line
 #
 # sury publishes architectures independently, so the candidate can differ per
@@ -15,7 +15,7 @@ set -eu
 REPO="${SURY_PHP_REPO:-https://packages.sury.org/php}"
 SUITE="${SURY_PHP_SUITE:-trixie}"
 PACKAGE="${SURY_PHP_PACKAGE:-php8.5-cli}"
-ARCHES="${SURY_PHP_ARCHES:-amd64 arm64}"
+ARCHES="${SURY_PHP_ARCHES:-amd64 arm64 armhf}"
 
 fetch() {
 	# $1 = architecture; prints the candidate version of $PACKAGE

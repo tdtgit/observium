@@ -212,6 +212,20 @@ for p in linux/amd64 linux/arm64; do
 done
 ```
 
+### Check installed component versions
+
+The image also records the versions of the main components it ships:
+
+```bash
+docker run --rm --entrypoint cat tuantuantuantuantuan/observium:latest /etc/observium-components
+```
+
+Running container:
+
+```bash
+docker compose exec observium cat /etc/observium-components
+```
+
 ## Release Automation
 
 Two workflows keep the published image current.
@@ -259,13 +273,13 @@ The same value is stored in the image label `org.observium.php.version`, which i
 
 Each GitHub release is generated from the published image, and always contains:
 
-- the image tags and the multi-arch manifest digest,
-- the PHP version and the image digest of every published platform,
-- the commands to check the PHP version in a deployment.
+- the image tags, the multi-arch manifest digest, and each platform's image digest and compressed size,
+- a table of installed component versions per architecture — Debian, Nginx, PHP, MariaDB client, RRDtool, Net-SNMP, and the bundled diagnostic utilities,
+- the commands to inspect the installed versions in a deployment.
 
-The PHP version is read back from the published image itself (`/etc/php-version`,
-falling back to the installed package version), so the note always describes the
-bytes that users pull.
+The component versions are read back from the published image itself
+(`/etc/observium-components`, with `/etc/php-version` still verified for PHP),
+so the note always describes the bytes that users pull.
 
 ### Overriding the release note
 

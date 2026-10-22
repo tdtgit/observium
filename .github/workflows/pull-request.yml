@@ -1,0 +1,54 @@
+name: pull-request
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# SECURITY: this workflow runs the contributor's Dockerfile, docker/ scripts and
+# compose.yaml, which is arbitrary code execution. It deliberately uses
+# `pull_request`, never `pull_request_target`: pull requests from forks then get
+# a read-only GITHUB_TOKEN and no repository secrets.
+#
+# Do not add secrets to this workflow, do not push anything, and do not move it
+# to a self-hosted runner.
+permissions:
+  contents: read
+
+concurrency:
+  group: pull-request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Compose smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Keep the token out of .git/config, which the build and the
+          # container scripts can read. The token is read-only, but it does
+          # not need to be reachable at all.
+          persist-credentials: false
+
+      - name: Build the image
+        run: docker build -t observium:pr .
+
+      - name: Boot the stack with Compose
+        # Starts from an empty database and fails on a restart, an ERROR in the
+        # entrypoint log, an incomplete schema, a broken login, or a
+        # non-idempotent second start. See scripts/smoke-compose.sh.
+        run: scripts/smoke-compose.sh observium:pr
+
+      - name: Write summary
+        if: always()
+        run: |
+          {
+            echo "### Compose smoke test"
+            echo
+            echo "Image: \`observium:pr\` built from \`${{ github.event.pull_request.head.sha }}\`"
+            echo
+            echo "Result: \`${{ job.status }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -283,8 +283,12 @@ jobs:
       - release-gate
       - push
     if: needs.release-gate.outputs.should_publish == 'true'
+    # Creating the release also creates its tag. GitHub refuses to create a tag
+    # pointing at a commit that changes .github/workflows/ unless the token also
+    # carries the workflows scope, which is why it is granted here.
     permissions:
       contents: write
+      workflows: write
     env:
       IMAGE_NAME: tuantuantuantuantuan/observium
       VERSION: ${{ needs.release-gate.outputs.version }}

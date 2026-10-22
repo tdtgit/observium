@@ -206,6 +206,48 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Resolve compressed image size (${{ matrix.platform }})
+        id: size
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.platform_key }}
+        run: |
+          set -euo pipefail
+
+          arch="${ARCH#linux-}"
+          image="${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+          # build-push-action publishes an index containing the platform
+          # manifest and an attestation manifest. Select the platform one.
+          manifest="$(docker buildx imagetools inspect --format '{{json .}}' "${image}" \
+            | python3 -c '
+          import json, sys
+          want = sys.argv[1]
+          manifest = json.load(sys.stdin)["manifest"]
+          children = manifest.get("manifests")
+          if not children:
+              print(manifest["digest"])
+              raise SystemExit(0)
+          for child in children:
+              platform = child.get("platform") or {}
+              annotations = child.get("annotations") or {}
+              if platform.get("architecture") != want:
+                  continue
+              if annotations.get("vnd.docker.reference.type"):
+                  continue
+              print(child["digest"])
+              break
+          else:
+              raise SystemExit(f"no manifest for {want}")
+          ' "${arch}")"
+
+          bytes="$(docker buildx imagetools inspect --raw "${IMAGE_NAME}@${manifest}" \
+            | python3 -c 'import json, sys; print(sum(layer.get("size", 0) for layer in json.load(sys.stdin).get("layers", [])))')"
+          human="$(python3 -c 'import sys; print(f"{int(sys.argv[1]) / 1000000:.2f} MB")' "${bytes}")"
+
+          echo "Compressed size: ${human} (${bytes} bytes)"
+          echo "human=${human}" >> "$GITHUB_OUTPUT"
+
       - name: Export image info
         run: |
           mkdir -p /tmp/image-info
@@ -213,6 +255,7 @@ jobs:
             printf 'platform=%s\n' "${{ matrix.platform }}"
             printf 'php-version=%s\n' "${{ steps.phpver.outputs.version }}"
             printf 'digest=%s\n' "${{ steps.build.outputs.digest }}"
+            printf 'size=%s\n' "${{ steps.size.outputs.human }}"
           } > "/tmp/image-info/${{ matrix.platform_key }}.info"
 
       - name: Upload image info artifact
@@ -313,7 +356,7 @@ jobs:
           pattern: image-info-*
           merge-multiple: true
 
-      - name: Read PHP version from the published image
+      - name: Read component versions from the published image
         run: |
           set -euo pipefail
           mkdir -p /tmp/published
@@ -345,9 +388,20 @@ jobs:
             fi
 
             printf '%s\n' "${published}" > "/tmp/published/${key}.php"
+
+            echo "Reading /etc/observium-components from ${IMAGE_NAME}@${digest} (${platform})"
+            components="$(docker run --rm --platform "${platform}" --entrypoint cat \
+              "${IMAGE_NAME}@${digest}" /etc/observium-components 2>/dev/null || true)"
+            if [ -n "${components}" ]; then
+              printf '%s\n' "${components}" > "/tmp/published/${key}.components"
+            else
+              # Images built before /etc/observium-components was introduced.
+              echo "No /etc/observium-components in the published image; the note falls back to PHP only."
+            fi
           done
 
           cat /tmp/published/*.php || true
+          cat /tmp/published/*.components 2>/dev/null || true
 
       - name: Create GitHub release
         uses: actions/github-script@v8
@@ -413,7 +467,26 @@ jobs:
               }
             }
 
-            // PHP version and per-platform digest, read from the published image.
+            // Component versions and per-platform digest, read from the
+            // published image. PHP is just one component among them.
+            const componentLabels = {
+              'debian': 'Debian',
+              'nginx': 'Nginx',
+              'php8.5-cli': 'PHP CLI',
+              'php8.5-fpm': 'PHP-FPM',
+              'php8.5-apcu': 'APCu',
+              'mariadb-client': 'MariaDB client',
+              'rrdtool': 'RRDtool',
+              'snmp': 'Net-SNMP',
+              'fping': 'fping',
+              'graphviz': 'Graphviz',
+              'imagemagick': 'ImageMagick',
+              'mtr-tiny': 'mtr',
+              'ipmitool': 'ipmitool',
+              'libvirt-clients': 'libvirt client',
+              'whois': 'whois'
+            };
+
             const infoDir = '/tmp/image-info';
             const rows = [];
             if (fs.existsSync(infoDir)) {
@@ -424,11 +497,21 @@ jobs:
                   file.replace(/\.info$/, '').replace('linux-', 'linux/');
                 const phpVersion = (content.match(/^php-version=(.*)$/m) || [])[1] || '';
                 const digest = (content.match(/^digest=(.*)$/m) || [])[1] || '';
+                const size = (content.match(/^size=(.*)$/m) || [])[1] || '';
                 const publishedFile = `/tmp/published/${file.replace(/\.info$/, '')}.php`;
                 const published = (fs.existsSync(publishedFile)
                   ? fs.readFileSync(publishedFile, 'utf8').trim()
                   : '').replace(/^php-version=/, '');
-                rows.push({ platform, phpVersion: published || phpVersion, digest });
+                const componentsFile = `/tmp/published/${file.replace(/\.info$/, '')}.components`;
+                const hasComponents = fs.existsSync(componentsFile);
+                const php = published || phpVersion;
+                const components = hasComponents
+                  ? fs.readFileSync(componentsFile, 'utf8').trim().split('\n').filter(Boolean).map((line) => {
+                      const [name, ...version] = line.split('\t');
+                      return { name, version: version.join('\t') };
+                    })
+                  : php ? [{ name: 'php8.5-cli', version: php }] : [];
+                rows.push({ platform, phpVersion: published || phpVersion, digest, size, components, hasComponents });
               }
             }
             const phpVersions = rows.map((row) => row.phpVersion);
@@ -454,18 +537,26 @@ jobs:
               '## Image',
               '',
               `Published to [Docker Hub](https://hub.docker.com/r/${imageName}).`,
-              '',
-              '| Tag | Type |',
-              '| --- | --- |',
-              `| \`${buildTag}\` | immutable, one per build |`,
-              `| \`${version}\` | current Observium version, moves on rebuild |`,
-              '| `latest` | rolling |',
               ''
             );
             if (manifestDigest) {
               lines.push(`Multi-arch digest: \`${manifestDigest}\``, '');
             }
+            if (rows.length > 0) {
+              lines.push(
+                '| Platform | Image digest | Compressed size |',
+                '| --- | --- | --- |',
+                ...rows.map((row) => `| \`${row.platform}\` | \`${row.digest}\` | ${row.size || '—'} |`),
+                ''
+              );
+            }
             lines.push(
+              '| Tag | Type |',
+              '| --- | --- |',
+              `| \`${buildTag}\` | immutable, one per build |`,
+              `| \`${version}\` | current Observium version, moves on rebuild |`,
+              '| `latest` | rolling |',
+              '',
               '```bash',
               `docker pull ${imageName}:${buildTag}`,
               `docker pull ${imageName}:latest`,
@@ -473,13 +564,41 @@ jobs:
             );
 
             if (rows.length > 0) {
+              const archColumns = rows.map((row) => `\`${row.platform}\``);
+              const componentNames = [];
+              for (const row of rows) {
+                for (const component of row.components) {
+                  if (!componentNames.includes(component.name)) componentNames.push(component.name);
+                }
+              }
+              const labelOrder = Object.keys(componentLabels);
+              componentNames.sort((a, b) => {
+                const ia = labelOrder.indexOf(a);
+                const ib = labelOrder.indexOf(b);
+                return (ia === -1 ? labelOrder.length : ia) - (ib === -1 ? labelOrder.length : ib);
+              });
+              const cell = (row, name) => {
+                const component = row.components.find((item) => item.name === name);
+                return component ? `\`${component.version}\`` : '—';
+              };
+              const inspectCommands = rows.every((row) => row.hasComponents)
+                ? [
+                    `docker run --rm --entrypoint cat ${imageName}:${buildTag} /etc/observium-components`,
+                    'docker compose exec observium cat /etc/observium-components'
+                  ]
+                : [
+                    `docker run --rm --entrypoint php ${imageName}:${buildTag} -v`,
+                    'docker compose exec observium php -v'
+                  ];
+
               lines.push(
                 '',
-                '## PHP version per platform',
+                '## Installed components',
                 '',
-                '| Platform | PHP version | Image digest |',
-                '| --- | --- | --- |',
-                ...rows.map((row) => `| \`${row.platform}\` | \`${row.phpVersion}\` | \`${row.digest}\` |`),
+                `| Component | ${archColumns.join(' | ')} |`,
+                `| --- | ${rows.map(() => '---').join(' | ')} |`,
+                ...componentNames.map((name) => `| ${componentLabels[name] || name} | ` +
+                  `${rows.map((row) => cell(row, name)).join(' | ')} |`),
                 ''
               );
               if (!phpUniform) {
@@ -491,11 +610,10 @@ jobs:
                 );
               }
               lines.push(
-                'Check the version in your deployment:',
+                'Check the versions in your deployment:',
                 '',
                 '```bash',
-                `docker run --rm --entrypoint php ${imageName}:${buildTag} -v`,
-                'docker compose exec observium php -v',
+                ...inspectCommands,
                 '```'
               );
             }

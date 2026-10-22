@@ -135,7 +135,121 @@ init_db_schema() {
   fi
 
   log "Running discovery.php -u (database schema init/update)"
-  (cd "${OBSERVIUM_HOME}" && ./discovery.php -u)
+
+  local status=0
+  (cd "${OBSERVIUM_HOME}" && ./discovery.php -u) || status=$?
+
+  if [[ "${status}" -ne 0 ]]; then
+    # A failed schema update is usually recoverable: the update scripts are
+    # idempotent and the next run continues where the previous one stopped.
+    log "discovery.php -u exited with status ${status}; retrying once"
+    status=0
+    (cd "${OBSERVIUM_HOME}" && ./discovery.php -u) || status=$?
+    if [[ "${status}" -ne 0 ]]; then
+      log "ERROR: database schema update failed with status ${status}"
+    fi
+  fi
+}
+
+# Observium installs its initial schema by piping update/db_schema_mysql.sql
+# into the mysql client, which stops at the first failing statement. On MariaDB
+# with lower_case_table_names=2 the ALTERs on mixed case table names (bgpPeers,
+# entPhysical, hrDevice, ...) leave those tables unreachable and the import
+# stops before devices.device_id is switched to AUTO_INCREMENT. Devices then
+# share the primary key value 0 and every device after the first one fails
+# with "Duplicate entry '0' for key 'PRIMARY'".
+#
+# Runs on every start, not only when the schema is (re)installed, so a
+# database that was imported with a broken schema is repaired as well.
+verify_db_schema() {
+  local lower_case_table_names
+  lower_case_table_names="$(mysql_exec "SELECT @@lower_case_table_names;" || true)"
+  if [[ "${lower_case_table_names}" == "2" ]]; then
+    log "WARNING: database uses lower_case_table_names=2, which breaks the Observium schema import."
+    log "         Recreate the database (docker compose down && rm -rf ./data/db && docker compose up -d);"
+    log "         a new data directory is created with lower_case_table_names=1."
+  fi
+
+  # A truncated schema import leaves the table with a stale data dictionary
+  # entry, so compare the column names case insensitively and check every
+  # matching entry instead of a single one.
+  local state column_type
+  IFS=$'\t' read -r state column_type <<< "$(mysql_exec "SELECT CASE WHEN COUNT(*) = 0 THEN 'absent' WHEN SUM(EXTRA LIKE '%auto_increment%') = COUNT(*) THEN 'ok' ELSE 'missing' END, MAX(COLUMN_TYPE) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${OBSERVIUM_DB_NAME}' AND LOWER(TABLE_NAME) = 'devices' AND LOWER(COLUMN_NAME) = 'device_id';" || true)"
+
+  case "${state}" in
+    "")
+      # Database not reachable, nothing to check.
+      return
+      ;;
+    absent)
+      # No schema installed (yet), nothing to check or repair.
+      return
+      ;;
+    ok)
+      ;;
+    *)
+      repair_devices_auto_increment "${column_type}"
+      ;;
+  esac
+
+  report_unreachable_tables
+}
+
+repair_devices_auto_increment() {
+  local column_type="${1:-int(11)}"
+  if [[ -z "${column_type}" ]]; then
+    column_type="int(11)"
+  fi
+
+  log "devices.device_id has no AUTO_INCREMENT (truncated schema import); repairing"
+  if mysql_exec "ALTER TABLE \`devices\` MODIFY \`device_id\` ${column_type} NOT NULL AUTO_INCREMENT;"; then
+    log "Repaired devices.device_id AUTO_INCREMENT"
+  else
+    log "ERROR: could not repair devices.device_id AUTO_INCREMENT; the database schema is incomplete."
+    log "       Recreate the database (docker compose down && rm -rf ./data/db && docker compose up -d) and add your devices again."
+  fi
+}
+
+report_unreachable_tables() {
+  # The tables with mixed case names are the ones MariaDB resolves
+  # inconsistently with lower_case_table_names=2, and the broken ones are not
+  # even listed in information_schema anymore. Take the names from the schema
+  # file Observium ships and probe them.
+  local schema_file="${OBSERVIUM_HOME}/update/db_schema_mysql.sql"
+
+  if [[ ! -f "${schema_file}" ]]; then
+    return
+  fi
+
+  local candidates
+  candidates="$(grep -oE 'CREATE TABLE `[A-Za-z0-9_-]+`' "${schema_file}" | sed -E 's/^CREATE TABLE `([^`]*)`$/\1/' | grep -E '[A-Z]' | sort -u || true)"
+
+  if [[ -z "${candidates}" ]]; then
+    return
+  fi
+
+  local script="" table lower
+  while IFS= read -r table; do
+    [[ -z "${table}" ]] && continue
+    script+="SELECT 1 FROM \`${table}\` LIMIT 0;"$'\n'
+  done <<< "${candidates}"
+
+  local broken
+  broken="$(printf '%s' "${script}" | mysql_exec_stdin 2>&1 | grep -oE "Table '[^']+' doesn't exist" | sed -E "s/^Table '.*\.([^']+)' doesn't exist$/\1/" | sort -u || true)"
+
+  if [[ -z "${broken}" ]]; then
+    return
+  fi
+
+  log "ERROR: some tables are not reachable by name (broken schema import):"
+  while IFS= read -r table; do
+    [[ -z "${table}" ]] && continue
+    lower="$(printf '%s' "${table}" | tr '[:upper:]' '[:lower:]')"
+    if printf '%s\n' "${broken}" | grep -qix "${lower}"; then
+      log "       ${table}"
+    fi
+  done <<< "${candidates}"
+  log "       Recreate the database (docker compose down && rm -rf ./data/db && docker compose up -d)."
 }
 
 create_admin_user() {
@@ -192,10 +306,22 @@ mysql_exec() {
     -e "$1"
 }
 
+mysql_exec_stdin() {
+  mariadb \
+    --host="${OBSERVIUM_DB_HOST}" \
+    --user="${OBSERVIUM_DB_USER}" \
+    --password="${OBSERVIUM_DB_PASSWORD}" \
+    --database="${OBSERVIUM_DB_NAME}" \
+    --batch --raw --force
+}
+
 next_numeric_id() {
   local table="$1"
   local column="$2"
-  mysql_exec "SELECT COALESCE(MAX(${column}), -1) + 1 FROM ${table};"
+  # Start at 1: inserting an explicit 0 into an AUTO_INCREMENT column makes
+  # the server assign the next generated value instead, which breaks the
+  # following inserts with a duplicate key error.
+  mysql_exec "SELECT COALESCE(MAX(${column}), 0) + 1 FROM ${table};"
 }
 
 create_default_dashboard() {
@@ -270,6 +396,7 @@ if is_nginx_foreground "$@"; then
   setup_rrd_ramdisk
   prepare_config
   init_db_schema
+  verify_db_schema
   create_admin_user
   create_default_dashboard
   start_php_fpm

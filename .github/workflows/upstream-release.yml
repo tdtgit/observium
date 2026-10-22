@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '18 0 * * 5'
   workflow_dispatch:
+    inputs:
+      release_notes:
+        description: 'Override the release note body (markdown). Requires release_notes_reason.'
+        required: false
+        type: string
+      release_notes_reason:
+        description: 'Why the release note is overridden. Shown in the release.'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -15,6 +24,7 @@ jobs:
       IMAGE_NAME: tuantuantuantuantuan/observium
     outputs:
       version: ${{ steps.version.outputs.version }}
+      build_tag: ${{ steps.buildtag.outputs.tag }}
       dockerhub_tag_exists: ${{ steps.dockerhub.outputs.exists }}
       should_publish: ${{ steps.decision.outputs.should_publish }}
       decision_reason: ${{ steps.decision.outputs.reason }}
@@ -84,6 +94,28 @@ jobs:
           echo "should_publish=$should_publish"
           echo "reason=$reason"
 
+      - name: Resolve build tag
+        id: buildtag
+        if: steps.decision.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Releases are identified by build date, not by the upstream version,
+          # so every publication is visible as new activity. A same-day repeat
+          # gets a numeric suffix.
+          base="$(date -u +%Y.%m.%d)"
+          tag="$base"
+          n=1
+          while gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; do
+            n=$((n + 1))
+            tag="${base}-${n}"
+          done
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "build tag: ${tag}"
+
   build:
     runs-on: ubuntu-latest
     needs: release-gate
@@ -103,6 +135,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Resolve PHP version for ${{ matrix.platform }}
+        id: phpver
+        run: |
+          arch="${ARCH#linux-}"
+          version="$(scripts/sury-php-version.sh "${arch}")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "PHP candidate for ${arch}: ${version}"
+        env:
+          ARCH: ${{ matrix.platform_key }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -129,6 +171,26 @@ jobs:
           cache-to: type=gha,mode=max,scope=weekly-release-${{ matrix.platform_key }}
           build-args: |
             OBSERVIUM_DOWNLOAD_URL=${{ env.OBSERVIUM_DOWNLOAD_URL }}
+            PHP_VERSION=${{ steps.phpver.outputs.version }}
+
+      - name: Verify PHP version in built image
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          PHP_VERSION: ${{ steps.phpver.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          actual="$(docker run --rm --platform "${PLATFORM}" --entrypoint dpkg-query \
+            "${IMAGE_NAME}@${IMAGE_DIGEST}" -W -f='${Version}' php8.5-cli)"
+
+          echo "label:  ${PHP_VERSION}"
+          echo "actual: ${actual}"
+
+          if [ "${actual}" != "${PHP_VERSION}" ]; then
+            echo "::error::PHP version mismatch: image has ${actual}, label says ${PHP_VERSION}"
+            exit 1
+          fi
 
       - name: Export digest
         run: |
@@ -137,10 +199,27 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digests-${{ matrix.platform_key }}
           path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Export image info
+        run: |
+          mkdir -p /tmp/image-info
+          {
+            printf 'platform=%s\n' "${{ matrix.platform }}"
+            printf 'php-version=%s\n' "${{ steps.phpver.outputs.version }}"
+            printf 'digest=%s\n' "${{ steps.build.outputs.digest }}"
+          } > "/tmp/image-info/${{ matrix.platform_key }}.info"
+
+      - name: Upload image info artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-info-${{ matrix.platform_key }}
+          path: /tmp/image-info/*
           if-no-files-found: error
           retention-days: 1
 
@@ -150,6 +229,8 @@ jobs:
       - release-gate
       - build
     if: needs.release-gate.outputs.should_publish == 'true'
+    outputs:
+      manifest_digest: ${{ steps.inspect.outputs.digest }}
     env:
       IMAGE_NAME: tuantuantuantuantuan/observium
 
@@ -164,7 +245,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Download digests
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digests-*
@@ -183,11 +264,18 @@ jobs:
           docker buildx imagetools create \
             -t "${IMAGE_NAME}:latest" \
             -t "${IMAGE_NAME}:${{ needs.release-gate.outputs.version }}" \
+            -t "${IMAGE_NAME}:${{ needs.release-gate.outputs.build_tag }}" \
             "${digests[@]}"
 
       - name: Inspect pushed image
+        id: inspect
         run: |
-          docker buildx imagetools inspect "${IMAGE_NAME}:${{ needs.release-gate.outputs.version }}"
+          set -euo pipefail
+          inspect="$(docker buildx imagetools inspect "${IMAGE_NAME}:${{ needs.release-gate.outputs.version }}")"
+          printf '%s\n' "${inspect}"
+          digest="$(printf '%s\n' "${inspect}" | awk '/^Digest:/ && !d { print $2; d = 1 }')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "multi-arch manifest digest: ${digest}"
 
   github-release:
     runs-on: ubuntu-latest
@@ -195,62 +283,235 @@ jobs:
       - release-gate
       - push
     if: needs.release-gate.outputs.should_publish == 'true'
+    # Creating the release also creates its tag. GitHub will not create a tag
+    # pointing at a commit that changes .github/workflows/ unless the token
+    # carries the `workflows` scope, which the GITHUB_TOKEN cannot be granted.
+    # Set RELEASE_TOKEN (fine-grained PAT with contents+workflows write) to
+    # cover those commits; otherwise the GITHUB_TOKEN is used and releases from
+    # workflow-changing commits are refused by the API.
     permissions:
       contents: write
     env:
       IMAGE_NAME: tuantuantuantuantuan/observium
       VERSION: ${{ needs.release-gate.outputs.version }}
+      BUILD_TAG: ${{ needs.release-gate.outputs.build_tag }}
+      MANIFEST_DIGEST: ${{ needs.push.outputs.manifest_digest }}
+      RELEASE_NOTES: ${{ inputs.release_notes }}
+      RELEASE_NOTES_REASON: ${{ inputs.release_notes_reason }}
 
     steps:
-      - name: Create or update GitHub release
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Download image info
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/image-info
+          pattern: image-info-*
+          merge-multiple: true
+
+      - name: Read PHP version from the published image
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/published
+
+          for info in /tmp/image-info/*.info; do
+            [ -e "${info}" ] || continue
+            key="$(basename "${info}" .info)"
+            platform="$(awk -F= '/^platform=/{print $2}' "${info}")"
+            if [ -z "${platform}" ]; then
+              # Fall back to the artifact name (linux-amd64 -> linux/amd64).
+              platform="$(printf '%s' "${key}" | sed 's|^linux-|linux/|')"
+            fi
+            digest="$(awk -F= '/^digest=/{print $2}' "${info}")"
+            [ -n "${digest}" ] || continue
+
+            echo "Reading /etc/php-version from ${IMAGE_NAME}@${digest} (${platform})"
+            published="$(docker run --rm --platform "${platform}" --entrypoint cat \
+              "${IMAGE_NAME}@${digest}" /etc/php-version 2>/dev/null || true)"
+            if [ -z "${published}" ]; then
+              # Images built before /etc/php-version was introduced.
+              published="$(docker run --rm --platform "${platform}" --entrypoint dpkg-query \
+                "${IMAGE_NAME}@${digest}" -W -f='${Version}' php8.5-cli)"
+            fi
+
+            expected="$(awk -F= '/^php-version=/{print $2}' "${info}")"
+            if [ "${published}" != "${expected}" ]; then
+              echo "::error::published image reports PHP ${published} but the build recorded ${expected}"
+              exit 1
+            fi
+
+            printf '%s\n' "${published}" > "/tmp/published/${key}.php"
+          done
+
+          cat /tmp/published/*.php || true
+
+      - name: Create GitHub release
         uses: actions/github-script@v8
         with:
+          github-token: ${{ secrets.RELEASE_TOKEN || github.token }}
           script: |
+            const fs = require('fs');
+            const path = require('path');
+
             const version = process.env.VERSION;
             const imageName = process.env.IMAGE_NAME;
-            const tagName = `v${version}`;
-            const releaseName = version;
-
-            const body = [
-              'Docker image published to Docker Hub.',
-              '',
-              `- Docker Hub: https://hub.docker.com/r/${imageName}`,
-              `- Stable tag: \`${imageName}:${version}\``,
-              `- Rolling tag: \`${imageName}:latest\``,
-              '',
-              'Pull commands:',
-              `- \`docker pull ${imageName}:${version}\``,
-              `- \`docker pull ${imageName}:latest\``
-            ].join('\n');
+            const buildTag = process.env.BUILD_TAG || new Date().toISOString().slice(0, 10).replace(/-/g, '.');
+            const manifestDigest = process.env.MANIFEST_DIGEST || '';
+            const releaseName = `Observium ${version} · ${buildTag}`;
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
+            // Override sources, in order of precedence:
+            //   1. the workflow_dispatch input (ad-hoc, one run)
+            //   2. release-notes/<observium-version>.md in the repository (durable, in git)
+            // Every publication creates a new date-tagged release, so an override
+            // never needs to survive a rebuild of the same release.
+            let note = '';
+            let reason = '';
+            let source = '';
+
+            const dispatchNote = (process.env.RELEASE_NOTES || '').trim();
+            const dispatchReason = (process.env.RELEASE_NOTES_REASON || '').trim();
+
+            const overrideFile = path.join(process.env.GITHUB_WORKSPACE || '/tmp', 'release-notes', `${version}.md`);
+            let fileNote = '';
+            let fileReason = '';
+            if (fs.existsSync(overrideFile)) {
+              let raw = fs.readFileSync(overrideFile, 'utf8');
+              const frontMatter = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+              if (frontMatter) {
+                const match = frontMatter[1].match(/^reason:\s*(.*)$/m);
+                if (match) fileReason = match[1].trim();
+                raw = raw.slice(frontMatter[0].length);
+              }
+              fileNote = raw.trim();
+            }
+
+            if (dispatchNote) {
+              note = dispatchNote;
+              reason = dispatchReason || fileReason;
+              source = 'workflow_dispatch input';
+            } else if (fileNote) {
+              note = fileNote;
+              reason = fileReason;
+              source = `release-notes/${version}.md`;
+            }
+
+            if (note && !reason) {
+              core.setFailed('A release note override requires a reason: set release_notes_reason, or add "reason:" to the front matter of the override file.');
+              return;
+            }
+            if (note) {
+              core.info(`Using release note override from ${source} (${reason})`);
+              if (source === 'workflow_dispatch input') {
+                core.warning('This override was passed as a workflow input. It is carried forward into the published release, but commit it to release-notes/<version>.md so it is reviewable in git.');
+              }
+            }
+
+            // PHP version and per-platform digest, read from the published image.
+            const infoDir = '/tmp/image-info';
+            const rows = [];
+            if (fs.existsSync(infoDir)) {
+              for (const file of fs.readdirSync(infoDir).sort()) {
+                if (!file.endsWith('.info')) continue;
+                const content = fs.readFileSync(path.join(infoDir, file), 'utf8');
+                const platform = (content.match(/^platform=(.*)$/m) || [])[1] ||
+                  file.replace(/\.info$/, '').replace('linux-', 'linux/');
+                const phpVersion = (content.match(/^php-version=(.*)$/m) || [])[1] || '';
+                const digest = (content.match(/^digest=(.*)$/m) || [])[1] || '';
+                const publishedFile = `/tmp/published/${file.replace(/\.info$/, '')}.php`;
+                const published = (fs.existsSync(publishedFile)
+                  ? fs.readFileSync(publishedFile, 'utf8').trim()
+                  : '').replace(/^php-version=/, '');
+                rows.push({ platform, phpVersion: published || phpVersion, digest });
+              }
+            }
+            const phpVersions = rows.map((row) => row.phpVersion);
+            const phpUniform = phpVersions.length > 0 && phpVersions.every((v) => v === phpVersions[0]);
+
+            const lines = [
+              `Observium **${version}** · build **${buildTag}**`,
+              ''
+            ];
+
+            if (note) {
+              lines.push(
+                '## Release notes',
+                '',
+                note,
+                '',
+                `> **Why this release is not the usual automated one:** ${reason}`,
+                ''
+              );
+            }
+
+            lines.push(
+              '## Image',
+              '',
+              `Published to [Docker Hub](https://hub.docker.com/r/${imageName}).`,
+              '',
+              '| Tag | Type |',
+              '| --- | --- |',
+              `| \`${buildTag}\` | immutable, one per build |`,
+              `| \`${version}\` | current Observium version, moves on rebuild |`,
+              '| `latest` | rolling |',
+              ''
+            );
+            if (manifestDigest) {
+              lines.push(`Multi-arch digest: \`${manifestDigest}\``, '');
+            }
+            lines.push(
+              '```bash',
+              `docker pull ${imageName}:${buildTag}`,
+              `docker pull ${imageName}:latest`,
+              '```'
+            );
+
+            if (rows.length > 0) {
+              lines.push(
+                '',
+                '## PHP version per platform',
+                '',
+                '| Platform | PHP version | Image digest |',
+                '| --- | --- | --- |',
+                ...rows.map((row) => `| \`${row.platform}\` | \`${row.phpVersion}\` | \`${row.digest}\` |`),
+                ''
+              );
+              if (!phpUniform) {
+                lines.push(
+                  '> The PHP repository publishes each architecture independently, so the platforms can ' +
+                    'differ by one patch release for a short period after an upstream release. The image is ' +
+                    'rebuilt automatically once the slower architecture catches up.',
+                  ''
+                );
+              }
+              lines.push(
+                'Check the version in your deployment:',
+                '',
+                '```bash',
+                `docker run --rm --entrypoint php ${imageName}:${buildTag} -v`,
+                'docker compose exec observium php -v',
+                '```'
+              );
+            }
+
+            const body = lines.join('\n');
+
+            // Create the release for this build tag, or update it when the job is
+            // re-run for the same tag (a failed release step must not produce a
+            // duplicate 2026.10.22-2 pointing at the same image). The Docker tag
+            // is last-write-wins in the same way, so both converge.
             let release;
             try {
-              const existing = await github.rest.repos.getReleaseByTag({
-                owner,
-                repo,
-                tag: tagName
-              });
-              release = await github.rest.repos.updateRelease({
-                owner,
-                repo,
-                release_id: existing.data.id,
-                tag_name: tagName,
-                target_commitish: context.sha,
-                name: releaseName,
-                body,
-                draft: false,
-                prerelease: false
-              });
-              core.info(`Updated release for tag ${tagName}`);
-            } catch (error) {
-              if (error.status !== 404) throw error;
               release = await github.rest.repos.createRelease({
                 owner,
                 repo,
-                tag_name: tagName,
+                tag_name: buildTag,
                 target_commitish: context.sha,
                 name: releaseName,
                 body,
@@ -258,7 +519,31 @@ jobs:
                 prerelease: false,
                 generate_release_notes: false
               });
-              core.info(`Created release for tag ${tagName}`);
+              core.info(`Created release ${buildTag} for Observium ${version}`);
+            } catch (error) {
+              if (error.status === 403) {
+                core.setFailed(
+                  `Cannot create the release tag ${buildTag}: the token is not allowed to tag a commit that ` +
+                    `changes .github/workflows/. Add a fine-grained personal access token with contents:write ` +
+                    `and workflows:write as the RELEASE_TOKEN secret, or publish this release from a commit that ` +
+                    `does not modify workflow files.`
+                );
+                return;
+              }
+              if (error.status !== 422) throw error;
+              const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag: buildTag });
+              release = await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: existing.data.id,
+                tag_name: buildTag,
+                target_commitish: context.sha,
+                name: releaseName,
+                body,
+                draft: false,
+                prerelease: false
+              });
+              core.info(`Updated existing release ${buildTag} for Observium ${version}`);
             }
 
             core.setOutput('release_url', release.data.html_url);
@@ -277,6 +562,7 @@ jobs:
         run: |
           echo "event=${{ github.event_name }}"
           echo "version=${{ needs.release-gate.outputs.version }}"
+          echo "build_tag=${{ needs.release-gate.outputs.build_tag }}"
           echo "dockerhub_tag_exists=${{ needs.release-gate.outputs.dockerhub_tag_exists }}"
           echo "should_publish=${{ needs.release-gate.outputs.should_publish }}"
           echo "decision_reason=${{ needs.release-gate.outputs.decision_reason }}"

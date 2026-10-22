@@ -247,9 +247,9 @@ jobs:
         id: inspect
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect "${IMAGE_NAME}:${{ needs.release-gate.outputs.version }}"
-          digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:${{ needs.release-gate.outputs.version }}" \
-            | awk '/^Digest:/ { print $2; exit }')"
+          inspect="$(docker buildx imagetools inspect "${IMAGE_NAME}:${{ needs.release-gate.outputs.version }}")"
+          printf '%s\n' "${inspect}"
+          digest="$(printf '%s\n' "${inspect}" | awk '/^Digest:/ && !d { print $2; d = 1 }')"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "multi-arch manifest digest: ${digest}"
 

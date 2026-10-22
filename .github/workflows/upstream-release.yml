@@ -491,36 +491,39 @@ jobs:
 
             const body = lines.join('\n');
 
-            // One release per publication, tagged by build date. If two runs race
-            // for the same date, the later one takes the next free suffix.
-            const baseTag = buildTag.split('-')[0];
-            let attemptTag = buildTag;
-            let attempt = 1;
+            // Create the release for this build tag, or update it when the job is
+            // re-run for the same tag (a failed release step must not produce a
+            // duplicate 2026.10.22-2 pointing at the same image). The Docker tag
+            // is last-write-wins in the same way, so both converge.
             let release;
-            for (;;) {
-              try {
-                release = await github.rest.repos.createRelease({
-                  owner,
-                  repo,
-                  tag_name: attemptTag,
-                  target_commitish: context.sha,
-                  name: releaseName,
-                  body,
-                  draft: false,
-                  prerelease: false,
-                  generate_release_notes: false
-                });
-                core.info(`Created release ${attemptTag} for Observium ${version}`);
-                break;
-              } catch (error) {
-                if (error.status !== 422 || attempt > 5) throw error;
-                core.warning(`tag ${attemptTag} is already taken`);
-                attempt += 1;
-                attemptTag = `${baseTag}-${attempt}`;
-              }
-            }
-            if (attemptTag !== buildTag) {
-              core.warning(`release published as ${attemptTag}, but the image tags use ${buildTag}`);
+            try {
+              release = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: buildTag,
+                target_commitish: context.sha,
+                name: releaseName,
+                body,
+                draft: false,
+                prerelease: false,
+                generate_release_notes: false
+              });
+              core.info(`Created release ${buildTag} for Observium ${version}`);
+            } catch (error) {
+              if (error.status !== 422) throw error;
+              const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag: buildTag });
+              release = await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: existing.data.id,
+                tag_name: buildTag,
+                target_commitish: context.sha,
+                name: releaseName,
+                body,
+                draft: false,
+                prerelease: false
+              });
+              core.info(`Updated existing release ${buildTag} for Observium ${version}`);
             }
 
             core.setOutput('release_url', release.data.html_url);

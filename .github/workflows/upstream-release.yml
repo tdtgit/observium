@@ -176,7 +176,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digests-${{ matrix.platform_key }}
           path: /tmp/digests/*
@@ -193,7 +193,7 @@ jobs:
           } > "/tmp/image-info/${{ matrix.platform_key }}.info"
 
       - name: Upload image info artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: image-info-${{ matrix.platform_key }}
           path: /tmp/image-info/*
@@ -222,7 +222,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Download digests
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digests-*
@@ -276,7 +276,7 @@ jobs:
         uses: docker/setup-qemu-action@v4
 
       - name: Download image info
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/image-info
           pattern: image-info-*
@@ -313,7 +313,7 @@ jobs:
               exit 1
             fi
 
-            printf 'php-version=%s\n' "${published}" > "/tmp/published/${key}.php"
+            printf '%s\n' "${published}" > "/tmp/published/${key}.php"
           done
 
           cat /tmp/published/*.php || true
@@ -419,9 +419,9 @@ jobs:
                 const phpVersion = (content.match(/^php-version=(.*)$/m) || [])[1] || '';
                 const digest = (content.match(/^digest=(.*)$/m) || [])[1] || '';
                 const publishedFile = `/tmp/published/${file.replace(/\.info$/, '')}.php`;
-                const published = fs.existsSync(publishedFile)
+                const published = (fs.existsSync(publishedFile)
                   ? fs.readFileSync(publishedFile, 'utf8').trim()
-                  : '';
+                  : '').replace(/^php-version=/, '');
                 rows.push({ platform, phpVersion: published || phpVersion, digest });
               }
             }

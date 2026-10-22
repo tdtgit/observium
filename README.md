@@ -65,6 +65,86 @@ rm -rf ./data/db ./data/rrd ./data/logs
 mkdir -p ./data/db ./data/rrd ./data/logs
 ```
 
+### Repair a broken database schema
+
+Symptom: adding the first device works, every further device fails with
+`Duplicate entry '0' for key 'PRIMARY'`, and the container log shows
+`Install initial database schema ... FALSE.`
+
+Cause: the initial schema import (`update/db_schema_mysql.sql`) was aborted
+before `devices.device_id` received `AUTO_INCREMENT`, so every device is
+stored with the primary key `0`.
+
+The entrypoint repairs `devices.device_id` on startup and logs what it did.
+If the repair fails (or the log also reports unreachable tables), recreate the
+database and add your devices again. A recreated data directory is created
+with `lower_case_table_names=1`, so the schema import completes:
+
+```bash
+docker compose down
+rm -rf ./data/db
+docker compose up -d
+```
+
+## Database notes
+
+### `lower_case_table_names`
+
+Observium's schema uses mixed case table names (`bgpPeers`, `entPhysical`,
+`hrDevice`, ...). With `lower_case_table_names=2` (the MariaDB default on case
+insensitive filesystems, e.g. macOS bind mounts) an `ALTER TABLE` on such a
+table leaves it unreachable by name, the schema import stops at the first
+error, and the schema ends up incomplete.
+
+The mode can only be chosen while the data directory is created, so
+`docker/db-entrypoint.sh` (used by the `db` service) decides it:
+
+- **new data directory** -> `lower_case_table_names=1`, table names are stored
+  lower case and every lookup finds them again, so the schema import
+  completes
+- **existing data directory** -> the mode it was created with is kept, so
+  upgrading never changes how the stored table names are looked up
+
+The chosen mode is stored inside the data directory
+(`./data/db/.observium-lower-case-table-names`) and survives a container
+recreation.
+
+The mode can be forced with `OBSERVIUM_DB_LOWER_CASE_TABLE_NAMES` (for example
+in `.env`). That is only useful for an existing data directory, and the
+entrypoint warns when the value differs from the mode the data directory was
+created with, because the stored table names keep their own mode.
+
+The `db` service runs `docker/db-entrypoint.sh` from this repository, so the
+repository directory has to be next to `compose.yaml`.
+
+Both files the script writes belong to it: the mode file inside
+`./data/db` and `/etc/mysql/conf.d/zz-observium.cnf` inside the `db`
+container. The container file is regenerated on every start and removed when
+the data directory has to keep its own mode; no other configuration file is
+touched. Deleting either file is safe - the next start recreates or removes it
+as needed. Deleting the mode file does not change the data directory, it only
+makes the next start fall back to the server default (or to the forced value).
+
+A database that was imported with `lower_case_table_names=2` cannot be fixed
+in place: the affected tables are already unreachable. Recreate the data
+directory, it is then created with `lower_case_table_names=1`.
+
+If you run your own database, create it with `lower_case_table_names=1`.
+
+### Open a database console
+
+The database runs in its own container, so the local socket path
+(`/run/mysqld/mysqld.sock`) does not exist inside the `observium` container.
+Connect over the network instead:
+
+```bash
+# from the host
+docker compose exec db mariadb -uobservium -pobservium observium
+
+# from the observium container
+docker compose exec observium mariadb -h db -uobservium -pobservium observium
+```
+
 ## Configuration
 
 Prefer editing env vars in `compose.yaml` (and optional `.env` values consumed by Compose), instead of injecting env vars directly into commands.
@@ -280,6 +360,19 @@ gh workflow run upstream-release.yml --ref main \
   -f release_notes="This image was rebuilt to pick up the arm64 PHP build." \
   -f release_notes_reason="Republished to pick up the arm64 build of PHP 8.5.12."
 ```
+
+### Verify the database schema
+
+```bash
+docker compose exec -T db mariadb -uobservium -pobservium observium \
+  -e "SHOW CREATE TABLE devices\G" | grep device_id
+```
+
+Expected:
+- `` `device_id` int(11) NOT NULL AUTO_INCREMENT ``
+
+Without `AUTO_INCREMENT` only one device can be stored, every further device
+fails with `Duplicate entry '0' for key 'PRIMARY'`.
 
 ## Build Locally (optional)
 

@@ -172,6 +172,94 @@ docker compose exec -T observium grep "rrd_dir" /opt/observium/config.php
 Expected when enabled:
 - `$config['rrd_dir'] = '/dev/shm/observium-rrd';`
 
+### Check the PHP version
+
+Each architecture may be on a different PHP patch release for a short window after an upstream release (the PHP repository publishes architectures independently), so check the version you actually run.
+
+One-shot, without starting the stack:
+
+```bash
+docker run --rm --entrypoint php tuantuantuantuantuan/observium:latest -v
+```
+
+Exact package version, including the repository build suffix:
+
+```bash
+docker run --rm --entrypoint sh tuantuantuantuantuan/observium:latest -c \
+  'dpkg-query -W php8.5-cli php8.5-fpm php8.5-apcu'
+```
+
+The build also records the resolved version in a file:
+
+```bash
+docker run --rm --entrypoint cat tuantuantuantuantuan/observium:latest /etc/php-version
+```
+
+Running container:
+
+```bash
+docker compose exec observium php -v
+docker exec <container> php-fpm8.5 -v
+```
+
+To see which architecture your host pulled, and compare both:
+
+```bash
+for p in linux/amd64 linux/arm64; do
+  printf '%-14s ' "$p"
+  docker run --rm --platform "$p" --entrypoint php \
+    tuantuantuantuantuan/observium:latest -r 'echo PHP_VERSION, PHP_EOL;'
+done
+```
+
+## Release Automation
+
+Two workflows keep the published image current.
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `upstream-release.yml` | weekly schedule, or manual dispatch | Resolves the upstream Observium version, builds `linux/amd64` and `linux/arm64`, pushes both by digest, and creates the multi-arch `:latest` and `:{version}` tags |
+| `php-refresh.yml` | daily schedule, or manual dispatch | Compares the PHP version published in the image against the versions currently offered by the PHP repository, and triggers a release rebuild when they differ |
+
+### PHP version per architecture
+
+The image installs PHP from the [sury](https://packages.sury.org/php) repository, which publishes each architecture independently. A newly released PHP patch therefore reaches `amd64` roughly two days before `arm64`, and during that window the multi-arch tag is intentionally not version-identical across architectures: each architecture gets the newest release available for it.
+
+Each build records the version it resolved:
+
+```bash
+docker run --rm --entrypoint sh tuantuantuantuantuan/observium:latest -c \
+  'dpkg-query -W -f="\${binary:Package} \${Version}\n" "php8.5-*"'
+```
+
+The same value is stored in the image label `org.observium.php.version`, which is what `php-refresh.yml` compares against the repository. Once the slower architecture catches up, the daily check detects the difference and rebuilds, so the tags converge automatically.
+
+### Release note contents
+
+Each GitHub release is generated from the published image, and always contains:
+
+- the image tags and the multi-arch manifest digest,
+- the PHP version and the image digest of every published platform,
+- the commands to check the PHP version in a deployment.
+
+The PHP version is read back from the published image itself (`/etc/php-version`,
+falling back to the installed package version), so the note always describes the
+bytes that users pull.
+
+### Overriding the release note
+
+When a release is not the usual automated one — for example an image rebuilt
+because the PHP repository published a new patch release for one architecture
+only — the prose part of the note can be overridden. A reason is mandatory and
+is rendered in the release, so the deviation is always explained. See
+[`release-notes/README.md`](release-notes/README.md).
+
+```bash
+gh workflow run upstream-release.yml --ref main \
+  -f release_notes="This image was rebuilt to pick up the arm64 PHP build." \
+  -f release_notes_reason="Republished to pick up the arm64 build of PHP 8.5.12."
+```
+
 ## Build Locally (optional)
 
 The provided compose file is for using the published image.

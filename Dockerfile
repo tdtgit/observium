@@ -76,6 +76,23 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && rm -rf /var/lib/apt/lists/* \
     && installed="$(dpkg-query -W -f='${Version}' php8.5-cli)" \
     && printf '%s\n' "${installed}" > /etc/php-version \
+    && printf 'debian\t%s\n' "$(cat /etc/debian_version)" > /etc/observium-components \
+    && dpkg-query -W -f='${Package}\t${Version}\n' \
+         fping \
+         graphviz \
+         imagemagick \
+         ipmitool \
+         libvirt-clients \
+         mariadb-client \
+         mtr-tiny \
+         nginx \
+         php8.5-apcu \
+         php8.5-cli \
+         php8.5-fpm \
+         rrdtool \
+         snmp \
+         whois \
+         >> /etc/observium-components \
     && if [ -n "${PHP_VERSION}" ] && [ "${installed}" != "${PHP_VERSION}" ]; then \
          echo "ERROR: php8.5-cli ${installed} was installed but PHP_VERSION=${PHP_VERSION} was requested" >&2; \
          exit 1; \

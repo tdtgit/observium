@@ -24,6 +24,7 @@ jobs:
       IMAGE_NAME: tuantuantuantuantuan/observium
     outputs:
       version: ${{ steps.version.outputs.version }}
+      build_tag: ${{ steps.buildtag.outputs.tag }}
       dockerhub_tag_exists: ${{ steps.dockerhub.outputs.exists }}
       should_publish: ${{ steps.decision.outputs.should_publish }}
       decision_reason: ${{ steps.decision.outputs.reason }}
@@ -92,6 +93,28 @@ jobs:
           echo "dockerhub_tag_exists=${{ steps.dockerhub.outputs.exists }}"
           echo "should_publish=$should_publish"
           echo "reason=$reason"
+
+      - name: Resolve build tag
+        id: buildtag
+        if: steps.decision.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Releases are identified by build date, not by the upstream version,
+          # so every publication is visible as new activity. A same-day repeat
+          # gets a numeric suffix.
+          base="$(date -u +%Y.%m.%d)"
+          tag="$base"
+          n=1
+          while gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; do
+            n=$((n + 1))
+            tag="${base}-${n}"
+          done
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "build tag: ${tag}"
 
   build:
     runs-on: ubuntu-latest
@@ -241,6 +264,7 @@ jobs:
           docker buildx imagetools create \
             -t "${IMAGE_NAME}:latest" \
             -t "${IMAGE_NAME}:${{ needs.release-gate.outputs.version }}" \
+            -t "${IMAGE_NAME}:${{ needs.release-gate.outputs.build_tag }}" \
             "${digests[@]}"
 
       - name: Inspect pushed image
@@ -264,6 +288,7 @@ jobs:
     env:
       IMAGE_NAME: tuantuantuantuantuan/observium
       VERSION: ${{ needs.release-gate.outputs.version }}
+      BUILD_TAG: ${{ needs.release-gate.outputs.build_tag }}
       MANIFEST_DIGEST: ${{ needs.push.outputs.manifest_digest }}
       RELEASE_NOTES: ${{ inputs.release_notes }}
       RELEASE_NOTES_REASON: ${{ inputs.release_notes_reason }}
@@ -318,7 +343,7 @@ jobs:
 
           cat /tmp/published/*.php || true
 
-      - name: Create or update GitHub release
+      - name: Create GitHub release
         uses: actions/github-script@v8
         with:
           script: |
@@ -327,36 +352,18 @@ jobs:
 
             const version = process.env.VERSION;
             const imageName = process.env.IMAGE_NAME;
+            const buildTag = process.env.BUILD_TAG || new Date().toISOString().slice(0, 10).replace(/-/g, '.');
             const manifestDigest = process.env.MANIFEST_DIGEST || '';
-            const tagName = `v${version}`;
-            const releaseName = version;
+            const releaseName = `Observium ${version} · ${buildTag}`;
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            // The published release is the durable record of an override: a later
-            // automated rebuild (for example once a slower architecture catches up
-            // with a new PHP release) regenerates the note and must not silently
-            // drop the explanation of why this release was not the usual one.
-            const overridePattern = /^## Release notes\n\n([\s\S]*?)\n\n> \*\*Why this release is not the usual automated one:\*\* ([^\n]+)$/m;
-            const parseOverride = (body) => {
-              const match = (body || '').match(overridePattern);
-              return match ? { note: match[1].trim(), reason: match[2].trim() } : null;
-            };
-
-            let existing = null;
-            try {
-              existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag: tagName });
-            } catch (error) {
-              if (error.status !== 404) throw error;
-            }
-            const previous = existing ? parseOverride(existing.data.body || '') : null;
-
             // Override sources, in order of precedence:
             //   1. the workflow_dispatch input (ad-hoc, one run)
-            //   2. release-notes/<version>.md in the repository (durable, in git)
-            //   3. the override already published in the release (carried forward)
-            // An empty override file explicitly clears a carried-forward override.
+            //   2. release-notes/<observium-version>.md in the repository (durable, in git)
+            // Every publication creates a new date-tagged release, so an override
+            // never needs to survive a rebuild of the same release.
             let note = '';
             let reason = '';
             let source = '';
@@ -367,9 +374,7 @@ jobs:
             const overrideFile = path.join(process.env.GITHUB_WORKSPACE || '/tmp', 'release-notes', `${version}.md`);
             let fileNote = '';
             let fileReason = '';
-            let fileExists = false;
             if (fs.existsSync(overrideFile)) {
-              fileExists = true;
               let raw = fs.readFileSync(overrideFile, 'utf8');
               const frontMatter = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
               if (frontMatter) {
@@ -384,16 +389,10 @@ jobs:
               note = dispatchNote;
               reason = dispatchReason || fileReason;
               source = 'workflow_dispatch input';
-            } else if (fileExists && fileNote) {
+            } else if (fileNote) {
               note = fileNote;
               reason = fileReason;
               source = `release-notes/${version}.md`;
-            } else if (fileExists && !fileNote) {
-              source = `release-notes/${version}.md (empty, override cleared)`;
-            } else if (previous) {
-              note = previous.note;
-              reason = previous.reason;
-              source = 'existing release';
             }
 
             if (note && !reason) {
@@ -448,7 +447,8 @@ jobs:
               '## Image',
               '',
               `- Docker Hub: https://hub.docker.com/r/${imageName}`,
-              `- Stable tag: \`${imageName}:${version}\``,
+              `- Build tag: \`${imageName}:${buildTag}\` (immutable)`,
+              `- Version tag: \`${imageName}:${version}\` (moves on rebuild)`,
               `- Rolling tag: \`${imageName}:latest\``
             );
             if (manifestDigest) {
@@ -458,6 +458,7 @@ jobs:
               '',
               'Pull commands:',
               '',
+              `- \`docker pull ${imageName}:${buildTag}\``,
               `- \`docker pull ${imageName}:${version}\``,
               `- \`docker pull ${imageName}:latest\``
             );
@@ -474,7 +475,7 @@ jobs:
                 'Check the version in your deployment:',
                 '',
                 '```bash',
-                `docker run --rm --entrypoint php ${imageName}:${version} -v`,
+                `docker run --rm --entrypoint php ${imageName}:${buildTag} -v`,
                 'docker compose exec observium php -v',
                 '```'
               );
@@ -490,33 +491,36 @@ jobs:
 
             const body = lines.join('\n');
 
+            // One release per publication, tagged by build date. If two runs race
+            // for the same date, the later one takes the next free suffix.
+            const baseTag = buildTag.split('-')[0];
+            let attemptTag = buildTag;
+            let attempt = 1;
             let release;
-            if (existing) {
-              release = await github.rest.repos.updateRelease({
-                owner,
-                repo,
-                release_id: existing.data.id,
-                tag_name: tagName,
-                target_commitish: context.sha,
-                name: releaseName,
-                body,
-                draft: false,
-                prerelease: false
-              });
-              core.info(`Updated release for tag ${tagName}`);
-            } else {
-              release = await github.rest.repos.createRelease({
-                owner,
-                repo,
-                tag_name: tagName,
-                target_commitish: context.sha,
-                name: releaseName,
-                body,
-                draft: false,
-                prerelease: false,
-                generate_release_notes: false
-              });
-              core.info(`Created release for tag ${tagName}`);
+            for (;;) {
+              try {
+                release = await github.rest.repos.createRelease({
+                  owner,
+                  repo,
+                  tag_name: attemptTag,
+                  target_commitish: context.sha,
+                  name: releaseName,
+                  body,
+                  draft: false,
+                  prerelease: false,
+                  generate_release_notes: false
+                });
+                core.info(`Created release ${attemptTag} for Observium ${version}`);
+                break;
+              } catch (error) {
+                if (error.status !== 422 || attempt > 5) throw error;
+                core.warning(`tag ${attemptTag} is already taken`);
+                attempt += 1;
+                attemptTag = `${baseTag}-${attempt}`;
+              }
+            }
+            if (attemptTag !== buildTag) {
+              core.warning(`release published as ${attemptTag}, but the image tags use ${buildTag}`);
             }
 
             core.setOutput('release_url', release.data.html_url);
@@ -535,6 +539,7 @@ jobs:
         run: |
           echo "event=${{ github.event_name }}"
           echo "version=${{ needs.release-gate.outputs.version }}"
+          echo "build_tag=${{ needs.release-gate.outputs.build_tag }}"
           echo "dockerhub_tag_exists=${{ needs.release-gate.outputs.dockerhub_tag_exists }}"
           echo "should_publish=${{ needs.release-gate.outputs.should_publish }}"
           echo "decision_reason=${{ needs.release-gate.outputs.decision_reason }}"

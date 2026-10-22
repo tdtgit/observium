@@ -5,6 +5,11 @@ FROM debian:13-slim AS base
 ARG DEBIAN_FRONTEND=noninteractive
 ARG OBSERVIUM_DOWNLOAD_URL="https://www.observium.org/observium-community-latest.tar.gz"
 
+# PHP version resolved for this platform by the release workflow. The value is
+# referenced by the install layer below, so a new version invalidates that
+# layer instead of being served from the build cache.
+ARG PHP_VERSION=""
+
 ENV OBSERVIUM_HOME=/opt/observium \
     OBSERVIUM_DB_HOST=db \
     OBSERVIUM_DB_NAME=observium \
@@ -68,7 +73,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       tzdata \
       whois \
     && apt-get purge -y --auto-remove gnupg dirmngr \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && installed="$(dpkg-query -W -f='${Version}' php8.5-cli)" \
+    && printf '%s\n' "${installed}" > /etc/php-version \
+    && if [ -n "${PHP_VERSION}" ] && [ "${installed}" != "${PHP_VERSION}" ]; then \
+         echo "ERROR: php8.5-cli ${installed} was installed but PHP_VERSION=${PHP_VERSION} was requested" >&2; \
+         exit 1; \
+       fi
 
 FROM base AS observium-src
 
@@ -78,6 +89,12 @@ RUN mkdir -p "${OBSERVIUM_HOME}" \
     && curl -fsSL "${OBSERVIUM_DOWNLOAD_URL}" | tar -xz --strip-components=1 -C "${OBSERVIUM_HOME}"
 
 FROM base
+
+# PHP version resolved for this platform at build time. The release workflow
+# passes the candidate available in the sury repository for the target
+# architecture; CI verifies the label against the version actually installed.
+ARG PHP_VERSION=""
+LABEL org.observium.php.version="${PHP_VERSION}"
 
 COPY --from=observium-src /opt/observium /opt/observium
 

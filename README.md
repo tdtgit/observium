@@ -205,7 +205,7 @@ docker exec <container> php-fpm8.5 -v
 To see which architecture your host pulled, and compare both:
 
 ```bash
-for p in linux/amd64 linux/arm64; do
+for p in linux/amd64 linux/arm64 linux/arm/v7; do
   printf '%-14s ' "$p"
   docker run --rm --platform "$p" --entrypoint php \
     tuantuantuantuantuan/observium:latest -r 'echo PHP_VERSION, PHP_EOL;'
@@ -232,7 +232,7 @@ Two workflows keep the published image current.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `upstream-release.yml` | weekly schedule, or manual dispatch | Resolves the upstream Observium version, builds `linux/amd64` and `linux/arm64`, pushes both by digest, and creates the Docker tags plus the GitHub release |
+| `upstream-release.yml` | weekly schedule, or manual dispatch | Resolves the upstream Observium version, builds `linux/amd64`, `linux/arm64`, and `linux/arm/v7`, pushes them by digest, and creates the Docker tags plus the GitHub release |
 | `php-refresh.yml` | daily schedule, or manual dispatch | Compares the PHP version published in the image against the versions currently offered by the PHP repository, and triggers a release rebuild when they differ |
 
 ### Tags and releases
@@ -256,9 +256,21 @@ Creating a release also creates its git tag. GitHub will not let a workflow crea
 
 
 
+### Platform support
+
+| Platform | Debian architecture | Notes |
+|---|---|---|
+| `linux/amd64` | `amd64` | 64-bit x86 |
+| `linux/arm64` | `arm64` | 64-bit ARM; preferred on ARM hardware |
+| `linux/arm/v7` | `armhf` | 32-bit ARM (Raspberry Pi 2/3 and other ARMv7 boards running a 32-bit OS) |
+
+Those are the architectures listed in the signed `trixie` `Release` of the [sury](https://packages.sury.org/php) PHP repository. Debian 13 also builds `i386`, `armel`, `ppc64el`, `riscv64`, and `s390x`, but the repository has no installable `php8.5-cli` for them (the `i386` index is frozen at PHP 8.5.0 and is not part of the signed `Release`), so this stack cannot build for those platforms. ARMv6 boards (`armel`, e.g. Raspberry Pi 1 and Zero) are therefore not supported.
+
+`linux/arm/v7` is a 32-bit userland, so PHP integers are 32-bit there, unlike the other two platforms (for example, timestamps stop fitting in a PHP integer in 2038). Use `linux/arm64` where the hardware supports it.
+
 ### PHP version per architecture
 
-The image installs PHP from the [sury](https://packages.sury.org/php) repository, which publishes each architecture independently. A newly released PHP patch therefore reaches `amd64` roughly two days before `arm64`, and during that window the multi-arch tag is intentionally not version-identical across architectures: each architecture gets the newest release available for it.
+The image installs PHP from the [sury](https://packages.sury.org/php) repository, which publishes each architecture independently. A newly released PHP patch therefore reaches `amd64` before `arm64` and `armhf`, and during that window the multi-arch tag is intentionally not version-identical across architectures: each architecture gets the newest release available for it.
 
 Each build records the version it resolved:
 

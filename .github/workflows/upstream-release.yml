@@ -435,7 +435,7 @@ jobs:
             const phpUniform = phpVersions.length > 0 && phpVersions.every((v) => v === phpVersions[0]);
 
             const lines = [
-              'Docker image published to Docker Hub.',
+              `Observium **${version}** · build **${buildTag}**`,
               ''
             ];
 
@@ -453,32 +453,44 @@ jobs:
             lines.push(
               '## Image',
               '',
-              `- Docker Hub: https://hub.docker.com/r/${imageName}`,
-              `- Build tag: \`${imageName}:${buildTag}\` (immutable)`,
-              `- Version tag: \`${imageName}:${version}\` (moves on rebuild)`,
-              `- Rolling tag: \`${imageName}:latest\``
+              `Published to [Docker Hub](https://hub.docker.com/r/${imageName}).`,
+              '',
+              '| Tag | Type |',
+              '| --- | --- |',
+              `| \`${buildTag}\` | immutable, one per build |`,
+              `| \`${version}\` | current Observium version, moves on rebuild |`,
+              '| `latest` | rolling |',
+              ''
             );
             if (manifestDigest) {
-              lines.push(`- Multi-arch digest: \`${manifestDigest}\``);
+              lines.push(`Multi-arch digest: \`${manifestDigest}\``, '');
             }
             lines.push(
-              '',
-              'Pull commands:',
-              '',
-              `- \`docker pull ${imageName}:${buildTag}\``,
-              `- \`docker pull ${imageName}:${version}\``,
-              `- \`docker pull ${imageName}:latest\``
+              '```bash',
+              `docker pull ${imageName}:${buildTag}`,
+              `docker pull ${imageName}:latest`,
+              '```'
             );
 
             if (rows.length > 0) {
               lines.push(
                 '',
-                '## PHP version and image digests',
+                '## PHP version per platform',
                 '',
                 '| Platform | PHP version | Image digest |',
                 '| --- | --- | --- |',
                 ...rows.map((row) => `| \`${row.platform}\` | \`${row.phpVersion}\` | \`${row.digest}\` |`),
-                '',
+                ''
+              );
+              if (!phpUniform) {
+                lines.push(
+                  '> The PHP repository publishes each architecture independently, so the platforms can ' +
+                    'differ by one patch release for a short period after an upstream release. The image is ' +
+                    'rebuilt automatically once the slower architecture catches up.',
+                  ''
+                );
+              }
+              lines.push(
                 'Check the version in your deployment:',
                 '',
                 '```bash',
@@ -486,14 +498,6 @@ jobs:
                 'docker compose exec observium php -v',
                 '```'
               );
-              if (!phpUniform) {
-                lines.push(
-                  '',
-                  '> The PHP repository publishes each architecture independently, so the platforms can ' +
-                    'differ by one patch release for a short period after an upstream release. The image is ' +
-                    'rebuilt automatically once the slower architecture catches up.'
-                );
-              }
             }
 
             const body = lines.join('\n');

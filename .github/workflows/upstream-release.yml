@@ -283,12 +283,14 @@ jobs:
       - release-gate
       - push
     if: needs.release-gate.outputs.should_publish == 'true'
-    # Creating the release also creates its tag. GitHub refuses to create a tag
-    # pointing at a commit that changes .github/workflows/ unless the token also
-    # carries the workflows scope, which is why it is granted here.
+    # Creating the release also creates its tag. GitHub will not create a tag
+    # pointing at a commit that changes .github/workflows/ unless the token
+    # carries the `workflows` scope, which the GITHUB_TOKEN cannot be granted.
+    # Set RELEASE_TOKEN (fine-grained PAT with contents+workflows write) to
+    # cover those commits; otherwise the GITHUB_TOKEN is used and releases from
+    # workflow-changing commits are refused by the API.
     permissions:
       contents: write
-      workflows: write
     env:
       IMAGE_NAME: tuantuantuantuantuan/observium
       VERSION: ${{ needs.release-gate.outputs.version }}
@@ -350,6 +352,7 @@ jobs:
       - name: Create GitHub release
         uses: actions/github-script@v8
         with:
+          github-token: ${{ secrets.RELEASE_TOKEN || github.token }}
           script: |
             const fs = require('fs');
             const path = require('path');
@@ -514,6 +517,15 @@ jobs:
               });
               core.info(`Created release ${buildTag} for Observium ${version}`);
             } catch (error) {
+              if (error.status === 403) {
+                core.setFailed(
+                  `Cannot create the release tag ${buildTag}: the token is not allowed to tag a commit that ` +
+                    `changes .github/workflows/. Add a fine-grained personal access token with contents:write ` +
+                    `and workflows:write as the RELEASE_TOKEN secret, or publish this release from a commit that ` +
+                    `does not modify workflow files.`
+                );
+                return;
+              }
               if (error.status !== 422) throw error;
               const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag: buildTag });
               release = await github.rest.repos.updateRelease({

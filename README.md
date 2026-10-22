@@ -233,6 +233,14 @@ Releases are identified by **build date**, not by the upstream Observium version
 
 A release is created when the Observium version is new, or when a rebuild is triggered because the PHP version changed. Nothing is published when neither has changed.
 
+### Release token
+
+Creating a release also creates its git tag. GitHub will not let a workflow create a tag that points at a commit changing `.github/workflows/`, because the built-in token cannot carry the `workflows` scope. Add a fine-grained personal access token with **contents: write** and **workflows: write** as the `RELEASE_TOKEN` secret to cover that case:
+
+- with the secret, releases work from any commit;
+- without it, releases still work, except for a commit that modifies workflow files (the job fails with an explicit message).
+
+
 
 ### PHP version per architecture
 

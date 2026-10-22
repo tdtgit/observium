@@ -2,6 +2,17 @@ services:
   db:
     image: mariadb:11
     restart: unless-stopped
+    # Observium's initial schema uses mixed case table names (bgpPeers,
+    # entPhysical, ...). With lower_case_table_names=2 (the MariaDB default on
+    # case insensitive filesystems) an ALTER TABLE on such a table leaves it
+    # unreachable and the schema import stops before devices.device_id gets
+    # AUTO_INCREMENT, which breaks adding more than one device. The mode can
+    # only be chosen while the data directory is created, so db-entrypoint.sh
+    # picks it before the data directory is initialised.
+    entrypoint:
+      - /bin/sh
+      - /opt/observium-db/db-entrypoint.sh
+      - docker-entrypoint.sh
     command:
       - mariadbd
       - ${MARIADB_BINLOG_OPTION:---skip-log-bin}
@@ -10,8 +21,13 @@ services:
       MARIADB_USER: observium
       MARIADB_PASSWORD: observium
       MARIADB_ROOT_PASSWORD: observium-root
+      # Optional: force lower_case_table_names (0, 1 or 2) instead of the
+      # mode chosen by db-entrypoint.sh. Only useful for an existing data
+      # directory, see the database notes in the README.
+      OBSERVIUM_DB_LOWER_CASE_TABLE_NAMES: ${OBSERVIUM_DB_LOWER_CASE_TABLE_NAMES:-}
     volumes:
       - ./data/db:/var/lib/mysql
+      - ./docker/db-entrypoint.sh:/opt/observium-db/db-entrypoint.sh:ro
     healthcheck:
       test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-uroot", "-pobservium-root"]
       interval: 10s

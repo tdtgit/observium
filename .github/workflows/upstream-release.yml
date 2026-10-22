@@ -278,11 +278,60 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Boots the exact image that `push` would tag. Only linux/amd64 is smoke
+  # tested: the container contents above the image (entrypoint, database
+  # scripts, nginx) are architecture independent, and running the full stack
+  # under QEMU for linux/arm64 and linux/arm/v7 is slow and flaky. The PHP
+  # versions for those platforms are verified in the build job instead.
+  smoke:
+    runs-on: ubuntu-latest
+    needs:
+      - release-gate
+      - build
+    if: needs.release-gate.outputs.should_publish == 'true'
+    env:
+      IMAGE_NAME: tuantuantuantuantuan/observium
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download image info
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/image-info
+          pattern: image-info-linux-amd64
+          merge-multiple: true
+
+      - name: Resolve the image digest
+        id: image
+        run: |
+          set -euo pipefail
+          digest="$(awk -F= '/^digest=/{ print $2 }' /tmp/image-info/linux-amd64.info)"
+          if [ -z "${digest}" ]; then
+            echo "::error::No digest recorded for linux/amd64"
+            exit 1
+          fi
+          echo "ref=${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "Smoke testing ${IMAGE_NAME}@${digest}"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Run the Compose smoke test
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: scripts/smoke-compose.sh "${IMAGE_REF}"
+
   push:
     runs-on: ubuntu-latest
     needs:
       - release-gate
       - build
+      - smoke
     if: needs.release-gate.outputs.should_publish == 'true'
     outputs:
       manifest_digest: ${{ steps.inspect.outputs.digest }}
@@ -683,6 +732,7 @@ jobs:
     needs:
       - release-gate
       - build
+      - smoke
       - push
       - github-release
     if: always()
@@ -697,5 +747,6 @@ jobs:
           echo "should_publish=${{ needs.release-gate.outputs.should_publish }}"
           echo "decision_reason=${{ needs.release-gate.outputs.decision_reason }}"
           echo "build_job_result=${{ needs.build.result }}"
+          echo "smoke_job_result=${{ needs.smoke.result }}"
           echo "push_job_result=${{ needs.push.result }}"
           echo "github_release_job_result=${{ needs.github-release.result }}"

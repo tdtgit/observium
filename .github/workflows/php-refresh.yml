@@ -30,15 +30,18 @@ jobs:
           echo "${labels}"
           echo
 
+          # linux/arm/v7 is recorded as "arm" in the image index.
           behind="false"
-          for arch in amd64 arm64; do
-            candidate="$(scripts/sury-php-version.sh "${arch}")"
-            published="$(printf '%s\n' "${labels}" | awk -v a="${arch}" '$1 == a { print $2 }')"
+          for pair in amd64:amd64 arm64:arm64 armhf:arm; do
+            debian_arch="${pair%%:*}"
+            image_arch="${pair##*:}"
+            candidate="$(scripts/sury-php-version.sh "${debian_arch}")"
+            published="$(printf '%s\n' "${labels}" | awk -v a="${image_arch}" '$1 == a { print $2 }')"
             if [ "${published}" = "${candidate}" ]; then
-              echo "${arch}: up to date (${candidate})"
+              echo "${debian_arch}: up to date (${candidate})"
             else
               behind="true"
-              echo "${arch}: behind (published=${published:-<none>} candidate=${candidate})"
+              echo "${debian_arch}: behind (published=${published:-<none>} candidate=${candidate})"
             fi
           done
 

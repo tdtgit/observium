@@ -129,8 +129,13 @@ jobs:
         include:
           - platform: linux/amd64
             platform_key: linux-amd64
+            debian_arch: amd64
           - platform: linux/arm64
             platform_key: linux-arm64
+            debian_arch: arm64
+          - platform: linux/arm/v7
+            platform_key: linux-arm-v7
+            debian_arch: armhf
 
     steps:
       - name: Checkout
@@ -139,12 +144,9 @@ jobs:
       - name: Resolve PHP version for ${{ matrix.platform }}
         id: phpver
         run: |
-          arch="${ARCH#linux-}"
-          version="$(scripts/sury-php-version.sh "${arch}")"
+          version="$(scripts/sury-php-version.sh "${{ matrix.debian_arch }}")"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "PHP candidate for ${arch}: ${version}"
-        env:
-          ARCH: ${{ matrix.platform_key }}
+          echo "PHP candidate for ${{ matrix.debian_arch }}: ${version}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -210,11 +212,17 @@ jobs:
         id: size
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-          ARCH: ${{ matrix.platform_key }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
 
-          arch="${ARCH#linux-}"
+          # Manifest architecture for linux/arm/v7 is "arm", with variant "v7".
+          platform="${PLATFORM#linux/}"
+          arch="${platform%%/*}"
+          variant=""
+          case "${platform}" in
+            */*) variant="${platform#*/}" ;;
+          esac
           image="${IMAGE_NAME}@${IMAGE_DIGEST}"
 
           # build-push-action publishes an index containing the platform
@@ -222,7 +230,7 @@ jobs:
           manifest="$(docker buildx imagetools inspect --format '{{json .}}' "${image}" \
             | python3 -c '
           import json, sys
-          want = sys.argv[1]
+          want, want_variant = sys.argv[1], sys.argv[2]
           manifest = json.load(sys.stdin)["manifest"]
           children = manifest.get("manifests")
           if not children:
@@ -233,13 +241,17 @@ jobs:
               annotations = child.get("annotations") or {}
               if platform.get("architecture") != want:
                   continue
+              # Only constrain the variant when the manifest records one; a
+              # missing variant is the only variant built for that architecture.
+              if want_variant and (platform.get("variant") or want_variant) != want_variant:
+                  continue
               if annotations.get("vnd.docker.reference.type"):
                   continue
               print(child["digest"])
               break
           else:
-              raise SystemExit(f"no manifest for {want}")
-          ' "${arch}")"
+              raise SystemExit(f"no manifest for {want}/{want_variant}")
+          ' "${arch}" "${variant}")"
 
           bytes="$(docker buildx imagetools inspect --raw "${IMAGE_NAME}@${manifest}" \
             | python3 -c 'import json, sys; print(sum(layer.get("size", 0) for layer in json.load(sys.stdin).get("layers", [])))')"

@@ -39,6 +39,8 @@ jobs:
       - name: Resolve upstream version
         id: version
         run: |
+          set -euo pipefail
+
           tar_args=(-xzOf - observium/includes/definitions/version.inc.php)
           if tar --help 2>&1 | grep -q -- '--fast-read'; then
             tar_args=(--fast-read "${tar_args[@]}")
@@ -46,8 +48,23 @@ jobs:
             tar_args=(--occurrence=1 "${tar_args[@]}")
           fi
 
+          # tar stops reading the stream once it has version.inc.php, which breaks
+          # the pipe and makes curl exit 23 ("Failure writing output to
+          # destination"). That is the expected outcome and not a build failure;
+          # any other curl error is real and must surface.
+          curl_err="$(mktemp)"
+          trap 'rm -f "$curl_err"' EXIT
+
           version="$(
-            curl -fsSL https://www.observium.org/observium-community-latest.tar.gz \
+            {
+              curl -fsSL https://www.observium.org/observium-community-latest.tar.gz 2>"$curl_err" || {
+                rc=$?
+                if [ "$rc" -ne 23 ]; then
+                  cat "$curl_err" >&2
+                  exit "$rc"
+                fi
+              }
+            } \
               | tar "${tar_args[@]}" \
               | awk -F"'" '/OBSERVIUM_VERSION_LONG/ {print $4; exit}'
           )"

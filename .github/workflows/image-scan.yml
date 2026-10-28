@@ -19,10 +19,11 @@ name: image-scan
 # nothing runs on a self-hosted runner.
 on:
   schedule:
-    # Mondays 04:37 UTC: rescan the current published image, which is rebuilt by
-    # the weekly release workflow on Fridays. Base-image findings appear even
-    # when nothing in this repository changed.
-    - cron: '37 4 * * 1'
+    # Fridays 07:00 UTC = 14:00 in Vietnam (UTC+7). The weekly release workflow
+    # rebuilds and publishes the image at 00:18 UTC on Fridays, so this rescans
+    # the fresh build a few hours later, picking up base-image findings even when
+    # nothing in this repository changed.
+    - cron: '0 7 * * 5'
   pull_request:
     types: [opened, synchronize, reopened]
   # Manual run: useful after a base image update or to re-check the published

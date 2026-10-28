@@ -1,3 +1,6 @@
 data/db/
 data/rrd/
 data/logs/
+# Local deployment overrides; scripts/pin-image.sh writes OBSERVIUM_IMAGE here
+# and an .env usually carries database passwords.
+.env

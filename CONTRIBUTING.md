@@ -66,13 +66,30 @@ logs. Deleting it resets the installation. It is never committed.
 
 ## Verify a change
 
+### Static checks
+
+Start with the checks that do not need Docker:
+
+```bash
+scripts/check-static.sh
+```
+
+It runs `bash -n` on every shell script, ShellCheck and actionlint when they are
+installed, parses every workflow and `compose.yaml`, and validates the Compose
+file when Docker is available. It prints `PASS`/`SKIP`/`FAIL` per check and
+exits non-zero on a failure. The `static` job in `pull-request.yml` runs the same
+script before it builds the image.
+
 ### Smoke test
 
 `scripts/smoke-compose.sh` boots a throwaway stack against any image reference
 and checks that it actually works: both containers become healthy, the web UI
 answers `HTTP 200`, the schema import completed, the admin login works, devices
 can be added and deleted with the real `add_device.php`/`delete_device.php`
-against test SNMP agents, and a second start of the entrypoint is idempotent.
+against test SNMP agents, the authentication boundary holds (anonymous access
+never renders the dashboard, a wrong password never creates a session), polling
+creates each device's RRD directory, and a second start of the entrypoint is
+idempotent.
 
 ```bash
 docker build -t observium:dev .
@@ -90,9 +107,10 @@ database and never touches `./data`. Options:
 This is the same test the pull request workflow and the release workflow run, so
 a change that passes it locally will not fail CI for a boot reason.
 
-### Syntax checks
+### Manual syntax checks
 
-Parse the shell scripts and the Compose file before pushing:
+`scripts/check-static.sh` covers this; by hand, parse the shell scripts and the
+Compose file before pushing:
 
 ```bash
 bash -n docker/entrypoint.sh scripts/smoke-compose.sh

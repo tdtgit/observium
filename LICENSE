@@ -1,0 +1,148 @@
+# Licensing
+
+This repository contains **Docker packaging only**. It is not Observium, it is
+not affiliated with the Observium project, and it does not relicense any
+upstream code.
+
+---
+
+## 1. This repository (the packaging)
+
+MIT License
+
+Copyright (c) 2026 the tdtgit/observium packaging contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+This MIT license covers the files written for this packaging repository:
+
+- `Dockerfile`, `.dockerignore`, `compose.yaml`,
+  `compose.pinned.example.yaml`
+- `docker/` (entrypoints, nginx and cron configuration)
+- `scripts/`
+- `.github/` (workflows, issue and pull request templates, Dependabot)
+- the documentation in this repository (`README.md`, `docs/`, `SECURITY.md`,
+  `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `release-notes/`)
+
+It does **not** cover:
+
+- the Observium application, which is unpacked into the image from the
+  upstream tarball (see section 2), or
+- the Debian packages installed into the image, nor the `mariadb:11` base image
+  (see section 3).
+
+## 2. Observium Community Edition (packaged, not owned)
+
+The `observium` container is built by downloading the official Observium
+Community Edition tarball
+(`https://www.observium.org/observium-community-latest.tar.gz`, see
+`OBSERVIUM_DOWNLOAD_URL` in the [Dockerfile](Dockerfile)) and unpacking it
+**unmodified** into `/opt/observium`. No Observium source file is patched or
+relicensed by this repository; the entrypoint only writes a configuration file
+(`config.php`) at runtime.
+
+The license document shipped inside that tarball is
+`/opt/observium/LICENSE.COMMUNITY`. Its first lines state, verbatim:
+
+```
+Observium License Version 1.0
+
+Copyright (c) 2007-2013 Adam Armstrong
+          (c) 2013-2021 Observium Limited
+```
+
+The license is named **"Observium License Version 1.0"**. It is not the MIT
+license and not a license this repository may change. Among other things it
+
+- permits copying and distributing the Software **in unmodified form**,
+  provided the entire package — including copyright, trademark notices and
+  disclaimers as released by the initial developer — is distributed with it;
+- permits distributing modifications only in a form separate from the
+  Software, must not alter or remove copyright notices, and grants the initial
+  developer a non-exclusive royalty-free right to distribute such
+  modifications in future versions;
+- provides the Software **"AS IS", with no warranty**, and limits the liability
+  of the initial developers and copyright holders.
+
+The full text is authoritative and travels with the software: read it with
+
+```bash
+docker run --rm --entrypoint cat tuantuantuantuantuan/observium:latest \
+  /opt/observium/LICENSE.COMMUNITY
+```
+
+or from the upstream tarball
+(`curl -fsSL https://www.observium.org/observium-community-latest.tar.gz | tar -xzO observium/LICENSE.COMMUNITY`).
+
+Because the image is built by unpacking that tarball as-is, the image contains
+`LICENSE.COMMUNITY`, `README` and `VERSION` unchanged, so the copyright and
+license notices travel with the distributed software.
+
+Observium also publishes editions and services under their own commercial
+terms; see <https://www.observium.org> for what is offered and under which
+terms. This repository does not grant, extend or restrict any right in
+Observium itself.
+
+### What this repository does and does not claim
+
+| Claim | Status |
+|---|---|
+| The packaging files in this repository are MIT licensed | yes (section 1) |
+| Observium itself is MIT / Apache / GPL / public domain | **no** — it is under the "Observium License Version 1.0" shown above |
+| Observium's source has been modified here | **no** — the tarball is unpacked unmodified |
+| This project is the Observium project, or endorsed by it | **no** — it is an unofficial packaging |
+| The name "Observium" and its logos are ours to license | **no** — they remain with their owners |
+
+If you redistribute an image built from this repository, keep
+`/opt/observium/LICENSE.COMMUNITY` intact and include the license text with
+whatever you ship. If you need terms other than the upstream license for
+Observium itself, ask the Observium authors.
+
+## 3. Third-party components inside the image
+
+The image and the Compose stack install or run software from other projects,
+each under its own license and copyright, none of it relicensed here:
+
+| Component | Where it comes from | License (as published by that project) |
+|---|---|---|
+| Debian 13 (`trixie`) userland | `debian:13-slim` | a mixture of free-software licenses, per package |
+| nginx | Debian / sury repositories | BSD-2-Clause |
+| PHP 8.5 and `php8.5-*` extensions | [sury](https://packages.sury.org/php) repository | PHP License 3.01 and the extensions' own licenses |
+| MariaDB server and client | `mariadb:11` image, `mariadb-client` package | GPL-2.0 |
+| RRDtool, Net-SNMP, fping, Graphviz, ImageMagick, ipmitool, mtr, whois | Debian repositories | each project's own license |
+| Trivy, actionlint, ShellCheck | CI only, never shipped in the image | Apache-2.0 / MIT / GPL-3.0 respectively |
+
+Exact versions are recorded in the image at `/etc/observium-components` and
+`/etc/php-version`, and package copyright files are available in the usual
+Debian locations inside the container
+(`/usr/share/doc/<package>/copyright`).
+
+## 4. Documentation and screenshots
+
+The documentation in this repository is covered by the MIT license in section
+1. The screenshots in [`docs/images/`](docs/images/) show the Observium web
+interface; they are included to document this packaging, and the interface
+design and the artwork shown in them remain the property of their respective
+owners.
+
+## 5. Questions
+
+- Licensing of **this packaging**: open an issue in this repository.
+- Licensing of **Observium**: <https://www.observium.org>.
+- A vulnerability in this packaging: see [SECURITY.md](SECURITY.md).

@@ -1,0 +1,47 @@
+version: 2
+
+# Weekly dependency updates for the two ecosystems this repository pins:
+#   - github-actions: every `uses:` in .github/workflows/
+#   - docker: the `FROM` images in Dockerfile and the `image:` lines in
+#     compose.yaml (mariadb:11)
+#
+# The image itself is rebuilt from the upstream Observium tarball by
+# upstream-release.yml, so there are no language ecosystems to watch here.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: friday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+      - github-actions
+    # One pull request per week instead of one per action; the release
+    # workflow is easy to re-verify as a whole.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: friday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+      - docker
+    groups:
+      docker:
+        patterns:
+          - "*"

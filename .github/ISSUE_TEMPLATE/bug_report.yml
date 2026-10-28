@@ -1,0 +1,115 @@
+name: Bug report
+description: Report a problem with the Docker image, the compose.yaml stack, or a container script.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository packages Observium Community Edition as a Docker image.
+        Bugs in the Observium application itself (the web UI, polling, device
+        support, alerting) belong upstream: <https://www.observium.org>
+
+        Do not report security vulnerabilities in a public issue. Use the
+        private form linked on the new-issue page instead.
+
+        Please test against the current `:latest` image before reporting, and
+        fill in every required field. A report without logs or versions
+        usually cannot be reproduced.
+
+  - type: input
+    id: image-ref
+    attributes:
+      label: Image tag or digest
+      description: |
+        The exact image you ran. A tag moves between builds, so a digest is
+        preferred. From a directory with the stack running:
+        `docker inspect --format '{{index .RepoDigests 0}}' $(docker compose ps -q observium)`
+      placeholder: "tuantuantuantuantuan/observium@sha256:..."
+    validations:
+      required: true
+
+  - type: input
+    id: host-os-arch
+    attributes:
+      label: Host OS and architecture
+      description: Operating system and CPU architecture running Docker, e.g. from `uname -sm` and your distribution and version.
+      placeholder: "Debian 13 (trixie), linux/amd64"
+    validations:
+      required: true
+
+  - type: input
+    id: docker-version
+    attributes:
+      label: Docker version
+      description: "Output of `docker version --format '{{.Server.Version}}'`."
+      placeholder: "27.3.1"
+    validations:
+      required: true
+
+  - type: input
+    id: compose-version
+    attributes:
+      label: Docker Compose version
+      description: "Output of `docker compose version`."
+      placeholder: "Docker Compose version v2.29.7"
+    validations:
+      required: true
+
+  - type: textarea
+    id: compose-config
+    attributes:
+      label: Resolved Compose configuration
+      description: |
+        Output of `docker compose config`, run in the directory you started the
+        stack from. It shows the defaults and environment values that were
+        actually applied.
+      render: yaml
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Container logs
+      description: |
+        Output of `docker compose logs --no-log-prefix`. Include the start of
+        the log, where the entrypoint reports the schema import and the
+        container setup.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected behaviour and actual behaviour
+      description: What you expected to happen, what happened instead, and the steps that reproduce it.
+      placeholder: |
+        Steps to reproduce:
+        1. docker compose up -d
+        2. ...
+
+        Expected:
+
+        Actual:
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Anything else that helps, such as changes you made to compose.yaml, environment values from .env, or whether the data directory was created by an older image.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and this is not a duplicate.
+          required: true
+        - label: This reproduces with the current `:latest` image, or I explain above why I cannot test it.
+          required: true
+        - label: This is a problem with the Docker packaging, not with the Observium application itself.
+          required: true

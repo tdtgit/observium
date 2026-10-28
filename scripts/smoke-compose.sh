@@ -186,6 +186,12 @@ widgets="$(db_scalar 'SELECT COUNT(*) FROM dash_widgets;')"
 [ "$dashboards" = "1" ] || fail "expected 1 dashboard, found ${dashboards}"
 [ "$widgets" -ge 6 ] || fail "expected at least 6 dashboard widgets, found ${widgets}"
 
+log "checking that an unauthenticated request is not logged in"
+anonymous_jar="$workdir/cookies-anonymous.txt"
+curl -s -c "$anonymous_jar" "http://127.0.0.1:${port}/" > "$workdir/anonymous.html"
+not_contains 'Logout' "$workdir/anonymous.html" \
+  || fail "an unauthenticated request rendered an authenticated session"
+
 log "checking the login"
 cookie_jar="$workdir/cookies.txt"
 login_code="$(curl -s -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
@@ -195,6 +201,17 @@ login_code="$(curl -s -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
 [ "$login_code" = "302" ] || fail "login returned HTTP ${login_code}"
 curl -s -b "$cookie_jar" "http://127.0.0.1:${port}/" > "$workdir/dashboard.html"
 contains 'Logout' "$workdir/dashboard.html" || fail "login did not produce an authenticated session"
+
+log "checking that a wrong password is rejected"
+wrong_jar="$workdir/cookies-wrong.txt"
+wrong_code="$(curl -s -o /dev/null -w '%{http_code}' -c "$wrong_jar" \
+  --data-urlencode "username=${admin_user}" \
+  --data-urlencode "password=${admin_password}-wrong" \
+  "http://127.0.0.1:${port}/")"
+curl -s -b "$wrong_jar" "http://127.0.0.1:${port}/" > "$workdir/wrong-password.html"
+not_contains 'Logout' "$workdir/wrong-password.html" \
+  || fail "a wrong password (HTTP ${wrong_code}) produced an authenticated session"
+log "wrong password returned HTTP ${wrong_code} and no session"
 
 # add_device.php is the real path: SNMP reachability, OS detection, insert. It
 # needs a live SNMP agent, which the two smoke-host sidecars provide. `-p`
@@ -226,6 +243,23 @@ for host in $smoke_hosts; do
     ''|*[!0-9]*) cat "$workdir/device.log" >&2; fail "add_device.php did not add ${host}" ;;
   esac
   [ "$device_id" -gt 0 ] || fail "the smoke device ${host} got device_id ${device_id}"
+
+  # The poller is what creates rrd/<hostname>/ and the RRD files inside it, so
+  # run it once per device against the live SNMP agent: the real graphing path,
+  # not a database-only check.
+  log "polling ${host}"
+  if ! "${compose[@]}" exec -T observium php poller.php -h "${host}" \
+    > "$workdir/poller-${host}.log" 2>&1; then
+    cat "$workdir/poller-${host}.log" >&2
+    fail "poller.php failed for ${host}"
+  fi
+
+  rrd_dir="/opt/observium/rrd/${host}"
+  "${compose[@]}" exec -T observium test -d "$rrd_dir" \
+    || fail "the RRD directory ${rrd_dir} was not created for ${host}"
+  "${compose[@]}" exec -T observium sh -c "ls ${rrd_dir}/*.rrd" >/dev/null 2>&1 \
+    || fail "the poller did not create any RRD file in ${rrd_dir}"
+
   device_ids="${device_ids} ${device_id}"
 done
 

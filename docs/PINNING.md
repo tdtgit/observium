@@ -164,8 +164,8 @@ The script:
 - `--digest` needs `docker buildx` and fails instead of silently falling back
   to the tag when resolution fails.
 
-`.env` is deployment-local: do not commit it. It currently is not in
-`.gitignore` either, so keep it out of the index yourself.
+`.env` is deployment-local: do not commit it. It is listed in `.gitignore`, so
+`git add -A` will not stage your pins or the credentials kept in the same file.
 
 ### Option B: a compose override
 
@@ -308,11 +308,16 @@ this repository's build reproducible, and it is worth being blunt about that.
   version-identical PHP across architectures matters, pin a digest and check
   `org.observium.php.version` per platform with `scripts/image-php-labels.py`
   before rolling it out.
-- **`mariadb:11` is still a moving tag.** `compose.yaml` pins the database to a
-  major-version tag, so the `db` service keeps drifting even when the
-  application image is pinned. There is no `MARIADB_IMAGE` variable to
-  override yet; an override file that sets `db.image` to
-  `mariadb:11.<minor>@sha256:…` pins it the same way.
+- **The database image drifts unless you pin it too.** `compose.yaml` reads
+  `MARIADB_IMAGE` (default `mariadb:11`, a moving tag), so pin it alongside the
+  application image:
+
+  ```bash
+  MARIADB_IMAGE=mariadb:11.8.9@sha256:…   # or the digest alone
+  ```
+
+  `scripts/pin-image.sh` only writes `OBSERVIUM_IMAGE`, so add this line to the
+  same `.env` by hand (or put `db.image` in an override file).
 - **Pinning is not provenance verification.** Digests are content addressed, so
   a digest cannot be repointed at different bytes, but nothing here verifies
   *who* built those bytes: there is no signature check and no verification of

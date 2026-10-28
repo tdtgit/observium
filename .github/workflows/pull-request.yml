@@ -19,9 +19,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Text-only checks: shell syntax, ShellCheck, actionlint, YAML parsing and
+  # `docker compose config`. Cheap (seconds), so it runs before the image build
+  # and fails fast. It still executes the contributor's own
+  # scripts/check-static.sh, so it inherits exactly the trust model of the
+  # build job below: pull_request, read-only token, no secrets, GitHub-hosted
+  # ephemeral runner. Nothing here needs a secret or a registry login.
+  static:
+    name: Static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run scripts/check-static.sh
+        # ShellCheck is preinstalled on the runner. actionlint is not, so the
+        # script downloads the pinned release below into a temp directory (and
+        # removes it again) instead of a marketplace action.
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+          SHELLCHECK_SEVERITY: warning
+        run: scripts/check-static.sh
+
   verify:
     name: Compose smoke test
     runs-on: ubuntu-latest
+    needs: static
     timeout-minutes: 30
 
     steps:

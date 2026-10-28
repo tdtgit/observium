@@ -1,0 +1,28 @@
+# Example override that pins the observium image by digest.
+#
+# Why a digest instead of a tag: a tag such as `:2026.10.26` is immutable, but
+# `:latest` and the `:{version}` tags are moved by the release workflow, and any
+# tag can be repointed on Docker Hub. A digest names one exact manifest, so the
+# bytes you reviewed are the bytes that run, and `docker compose pull` never
+# silently upgrades you.
+#
+# The digest below is a placeholder of zeros. It does not exist, so pulling it
+# fails loudly (`not found`) instead of quietly deploying something else -
+# replace it with the digest you resolved, see docs/PINNING.md.
+#
+# Usage:
+#   cp compose.pinned.example.yaml compose.pinned.yaml
+#   $EDITOR compose.pinned.yaml          # paste the digest from docs/PINNING.md
+#   docker compose -f compose.yaml -f compose.pinned.yaml pull
+#   docker compose -f compose.yaml -f compose.pinned.yaml up -d
+#
+# This digest is the multi-arch index, which covers linux/amd64, linux/arm64
+# and linux/arm/v7 plus the build attestations. A per-platform digest (the ones
+# `docker buildx imagetools inspect` lists under `Manifests:`) only works on
+# that one architecture.
+#
+# The tag is kept in front of the digest so the pin stays readable. It is
+# ignored for resolution: the digest alone decides which bytes run.
+services:
+  observium:
+    image: tuantuantuantuantuan/observium:2026.10.26@sha256:0000000000000000000000000000000000000000000000000000000000000000

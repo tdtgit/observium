@@ -51,9 +51,7 @@ prepare_config() {
 \$config['rrd_dir']      = '${OBSERVIUM_RRD_DIR}';
 \$config['log_dir']      = '${OBSERVIUM_HOME}/logs';
 // Avoid empty host in generated URLs when running behind containerized web servers.
-// Observium builds absolute URLs from this value (login redirect, graph images),
-// and nginx in this container only ever sees plain HTTP, so a TLS-terminating
-// reverse proxy is detected through the header it forwards.
+// nginx here only sees plain HTTP, so honour the header a TLS proxy forwards.
 \$__obs_https = (!empty(\$_SERVER['HTTPS']) && \$_SERVER['HTTPS'] !== 'off')
   || ((\$_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
 \$__obs_scheme = \$__obs_https ? 'https' : 'http';
@@ -257,9 +255,7 @@ report_unreachable_tables() {
   log "       Recreate the database (docker compose down && rm -rf ./data/db && docker compose up -d)."
 }
 
-# Generate a password for the initial administrator account. Alphanumeric only,
-# so it survives copy and paste out of `docker compose logs` and the terminal.
-# openssl comes in with ca-certificates; /dev/urandom is the fallback.
+# Alphanumeric only, so it stays copy-paste safe out of `docker compose logs`.
 generate_admin_password() {
   local password=""
 
@@ -268,8 +264,7 @@ generate_admin_password() {
   fi
 
   if [[ -z "${password}" ]]; then
-    # cut consumes the whole stream, so no process in this pipeline is killed by
-    # SIGPIPE, which `set -o pipefail` would turn into a failure.
+    # cut drains the stream, so pipefail sees no SIGPIPE.
     password="$(dd if=/dev/urandom bs=512 count=1 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c1-24)"
   fi
 
@@ -304,8 +299,6 @@ create_admin_user() {
     return
   fi
 
-  # Never recreate or reset an existing user: a restart must not print a new
-  # password for an account the operator may already have changed.
   local existing_user_id
   existing_user_id="$(mysql_exec "SELECT user_id FROM users WHERE username='$(sql_escape "${OBSERVIUM_ADMIN_USER}")' LIMIT 1;" || true)"
   if [[ -n "${existing_user_id}" ]]; then

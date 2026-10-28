@@ -103,6 +103,11 @@ EOF
 
 export OBSERVIUM_IMAGE="$image"
 export OBSERVIUM_HTTP_PORT="$port"
+# compose.yaml has no default admin password (the image generates and prints a
+# random one when it is empty), so the test stack must be given the password
+# this script logs in with.
+export OBSERVIUM_ADMIN_USER="$admin_user"
+export OBSERVIUM_ADMIN_PASSWORD="$admin_password"
 
 log "image: ${image}"
 log "workdir: ${workdir}"

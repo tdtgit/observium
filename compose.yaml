@@ -51,7 +51,11 @@ services:
       OBSERVIUM_INIT_DB_SCHEMA: ${OBSERVIUM_INIT_DB_SCHEMA:-true}
       OBSERVIUM_CREATE_ADMIN: ${OBSERVIUM_CREATE_ADMIN:-true}
       OBSERVIUM_ADMIN_USER: ${OBSERVIUM_ADMIN_USER:-admin}
-      OBSERVIUM_ADMIN_PASSWORD: ${OBSERVIUM_ADMIN_PASSWORD:-admin}
+      # No default password: when this is empty the entrypoint generates a
+      # random one and prints it once in the container log. `${VAR-}` (no
+      # colon) keeps an explicitly empty value empty instead of substituting a
+      # well-known default.
+      OBSERVIUM_ADMIN_PASSWORD: ${OBSERVIUM_ADMIN_PASSWORD-}
       OBSERVIUM_ADMIN_LEVEL: ${OBSERVIUM_ADMIN_LEVEL:-10}
       OBSERVIUM_ENABLE_CRON: ${OBSERVIUM_ENABLE_CRON:-true}
       OBSERVIUM_ENABLE_FASTCACHE: ${OBSERVIUM_ENABLE_FASTCACHE:-true}

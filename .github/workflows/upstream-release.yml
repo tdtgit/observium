@@ -295,11 +295,86 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Executes the emulated images, so a build that produces an arm64 or armhf
+  # image whose binaries do not run is caught before publishing. Runs in
+  # parallel with `smoke`, so it does not extend the release by more than the
+  # slower of the two. See docs/TESTING.md for why the full Compose stack is
+  # not booted here.
+  arch-test:
+    runs-on: ubuntu-latest
+    needs:
+      - release-gate
+      - build
+    if: needs.release-gate.outputs.should_publish == 'true'
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/arm64
+            platform_key: linux-arm64
+          - platform: linux/arm/v7
+            platform_key: linux-arm-v7
+    env:
+      IMAGE_NAME: tuantuantuantuantuan/observium
+      PLATFORM: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download image info
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/image-info
+          pattern: image-info-${{ matrix.platform_key }}
+          merge-multiple: true
+
+      - name: Resolve the image digest
+        id: image
+        run: |
+          set -euo pipefail
+          info="/tmp/image-info/${{ matrix.platform_key }}.info"
+          digest="$(awk -F= '/^digest=/{ print $2 }' "${info}")"
+          if [ -z "${digest}" ]; then
+            echo "::error::No digest recorded for ${{ matrix.platform }}"
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "php=$(awk -F= '/^php-version=/{ print $2 }' "${info}")" >> "$GITHUB_OUTPUT"
+          echo "Testing ${IMAGE_NAME}@${digest} on ${{ matrix.platform }}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Pulls the digest that was just pushed, i.e. exactly the bytes `push`
+      # would tag, instead of rebuilding them under emulation. The local tag
+      # keeps `docker run --platform` from re-resolving the manifest index.
+      - name: Pull the ${{ matrix.platform }} image by digest
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull --platform "${PLATFORM}" "${IMAGE_NAME}@${IMAGE_DIGEST}"
+          docker tag "${IMAGE_NAME}@${IMAGE_DIGEST}" observium:arch-test
+
+      - name: Execute the image under QEMU
+        env:
+          EXPECTED_PHP_VERSION: ${{ steps.image.outputs.php }}
+        run: scripts/test-image-arch.sh observium:arch-test "${PLATFORM}" "${EXPECTED_PHP_VERSION}"
+
   # Boots the exact image that `push` would tag. Only linux/amd64 is smoke
-  # tested: the container contents above the image (entrypoint, database
-  # scripts, nginx) are architecture independent, and running the full stack
-  # under QEMU for linux/arm64 and linux/arm/v7 is slow and flaky. The PHP
-  # versions for those platforms are verified in the build job instead.
+  # tested here: linux/arm64 and linux/arm/v7 are executed by `arch-test` above,
+  # and the full stack is not booted under QEMU because it is slow and flaky.
+  # The container contents above the image (entrypoint, database scripts,
+  # nginx) are architecture independent, so booting them once on amd64 is
+  # enough. The PHP version of every platform is verified in the build job.
   smoke:
     runs-on: ubuntu-latest
     needs:
@@ -349,6 +424,7 @@ jobs:
       - release-gate
       - build
       - smoke
+      - arch-test
     if: needs.release-gate.outputs.should_publish == 'true'
     outputs:
       manifest_digest: ${{ steps.inspect.outputs.digest }}

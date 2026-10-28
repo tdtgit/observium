@@ -45,7 +45,7 @@ env:
   PUBLISHED_IMAGE: tuantuantuantuantuan/observium:latest
   # Pinned Trivy release, so a scan result does not change because the action
   # default moved.
-  TRIVY_VERSION: v0.70.0
+  TRIVY_VERSION: v0.76.1
 
 jobs:
   published-image:
@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -118,7 +118,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 

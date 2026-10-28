@@ -1,6 +1,8 @@
 services:
   db:
-    image: mariadb:11
+    # Override to pin the database image, e.g. MARIADB_IMAGE=mariadb:11.4.5 in
+    # .env, so a deployment does not move when the mariadb:11 tag is updated.
+    image: ${MARIADB_IMAGE:-mariadb:11}
     restart: unless-stopped
     # Observium's initial schema uses mixed case table names (bgpPeers,
     # entPhysical, ...). With lower_case_table_names=2 (the MariaDB default on

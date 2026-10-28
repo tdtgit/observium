@@ -51,7 +51,12 @@ prepare_config() {
 \$config['rrd_dir']      = '${OBSERVIUM_RRD_DIR}';
 \$config['log_dir']      = '${OBSERVIUM_HOME}/logs';
 // Avoid empty host in generated URLs when running behind containerized web servers.
-\$__obs_scheme = (!empty(\$_SERVER['HTTPS']) && \$_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+// Observium builds absolute URLs from this value (login redirect, graph images),
+// and nginx in this container only ever sees plain HTTP, so a TLS-terminating
+// reverse proxy is detected through the header it forwards.
+\$__obs_https = (!empty(\$_SERVER['HTTPS']) && \$_SERVER['HTTPS'] !== 'off')
+  || ((\$_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+\$__obs_scheme = \$__obs_https ? 'https' : 'http';
 \$__obs_host = \$_SERVER['HTTP_HOST'] ?? (\$_SERVER['SERVER_NAME'] ?? 'localhost');
 \$config['base_url'] = \$__obs_scheme . '://' . \$__obs_host;
 EOCFG
@@ -252,21 +257,70 @@ report_unreachable_tables() {
   log "       Recreate the database (docker compose down && rm -rf ./data/db && docker compose up -d)."
 }
 
+# Generate a password for the initial administrator account. Alphanumeric only,
+# so it survives copy and paste out of `docker compose logs` and the terminal.
+# openssl comes in with ca-certificates; /dev/urandom is the fallback.
+generate_admin_password() {
+  local password=""
+
+  if command -v openssl >/dev/null 2>&1; then
+    password="$(openssl rand -base64 64 | tr -dc 'A-Za-z0-9' | cut -c1-24)"
+  fi
+
+  if [[ -z "${password}" ]]; then
+    # cut consumes the whole stream, so no process in this pipeline is killed by
+    # SIGPIPE, which `set -o pipefail` would turn into a failure.
+    password="$(dd if=/dev/urandom bs=512 count=1 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c1-24)"
+  fi
+
+  printf '%s' "${password}"
+}
+
+print_generated_admin_password() {
+  local user="$1" password="$2"
+
+  printf '\n'
+  printf '===============================================================================\n'
+  printf ' OBSERVIUM INITIAL ADMINISTRATOR CREDENTIALS\n'
+  printf '\n'
+  printf '   username: %s\n' "${user}"
+  printf '   password: %s\n' "${password}"
+  printf '\n'
+  printf ' A random password was generated because OBSERVIUM_ADMIN_PASSWORD was empty.\n'
+  printf ' It is printed exactly once, in this container log, and is not stored in a\n'
+  printf ' file anywhere. Change it after the first login (Preferences -> Change\n'
+  printf ' Password) or remove the user. Treat the container log as a secret.\n'
+  printf '===============================================================================\n'
+  printf '\n'
+}
+
 create_admin_user() {
   if [[ "${OBSERVIUM_CREATE_ADMIN}" != "true" ]]; then
     return
   fi
 
-  if [[ -z "${OBSERVIUM_ADMIN_USER}" || -z "${OBSERVIUM_ADMIN_PASSWORD}" ]]; then
-    log "Skipping admin user creation because OBSERVIUM_ADMIN_USER or OBSERVIUM_ADMIN_PASSWORD is empty"
+  if [[ -z "${OBSERVIUM_ADMIN_USER}" ]]; then
+    log "Skipping admin user creation because OBSERVIUM_ADMIN_USER is empty"
     return
   fi
 
+  # Never recreate or reset an existing user: a restart must not print a new
+  # password for an account the operator may already have changed.
   local existing_user_id
   existing_user_id="$(mysql_exec "SELECT user_id FROM users WHERE username='$(sql_escape "${OBSERVIUM_ADMIN_USER}")' LIMIT 1;" || true)"
   if [[ -n "${existing_user_id}" ]]; then
     log "Admin user '${OBSERVIUM_ADMIN_USER}' already exists; skipping creation"
     return
+  fi
+
+  local generated_password=""
+  if [[ -z "${OBSERVIUM_ADMIN_PASSWORD}" ]]; then
+    OBSERVIUM_ADMIN_PASSWORD="$(generate_admin_password)"
+    if [[ -z "${OBSERVIUM_ADMIN_PASSWORD}" ]]; then
+      log "ERROR: could not generate an admin password; set OBSERVIUM_ADMIN_PASSWORD explicitly"
+      return
+    fi
+    generated_password="true"
   fi
 
   local new_user_id password_hash user_escaped pass_escaped level_value
@@ -281,6 +335,10 @@ create_admin_user() {
 
   mysql_exec "INSERT INTO users (user_id, username, password, realname, email, descr, level, can_modify_passwd, user_options, type) VALUES (${new_user_id}, '${user_escaped}', '${pass_escaped}', '${user_escaped}', '', '', ${level_value}, 1, NULL, 'mysql');"
   log "Created initial admin user '${OBSERVIUM_ADMIN_USER}' (user_id=${new_user_id})"
+
+  if [[ -n "${generated_password}" ]]; then
+    print_generated_admin_password "${OBSERVIUM_ADMIN_USER}" "${OBSERVIUM_ADMIN_PASSWORD}"
+  fi
 }
 
 start_cron_if_enabled() {

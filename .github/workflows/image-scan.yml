@@ -1,0 +1,184 @@
+name: image-scan
+
+# Container vulnerability scanning with Trivy.
+#
+# Two paths:
+#   * scheduled (weekly) — scans the image that is actually published to Docker
+#     Hub and only reports: findings land in GitHub code scanning and in the job
+#     summary, never in a red build. A red weekly job that nobody can act on is
+#     noise; the report is what is useful.
+#   * pull_request — builds the pull request and scans the result. Findings are
+#     reported the same way, and the job fails only on CRITICAL findings that
+#     have a fix available (that is a change the author can act on). Unfixable
+#     findings do not block a merge.
+#
+# SECURITY: like pull-request.yml this workflow builds and therefore executes
+# the contributor's Dockerfile. It uses `pull_request`, never
+# `pull_request_target`, so fork pull requests get a read-only GITHUB_TOKEN and
+# no repository secrets. No secrets are referenced here, nothing is pushed, and
+# nothing runs on a self-hosted runner.
+on:
+  schedule:
+    # Mondays 04:37 UTC: rescan the current published image, which is rebuilt by
+    # the weekly release workflow on Fridays. Base-image findings appear even
+    # when nothing in this repository changed.
+    - cron: '37 4 * * 1'
+  pull_request:
+    types: [opened, synchronize, reopened]
+  # Manual run: useful after a base image update or to re-check the published
+  # image without waiting for Monday.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Uploading SARIF to code scanning. Fork pull requests get a read-only token,
+  # so the upload step is allowed to fail there (see below).
+  security-events: write
+
+concurrency:
+  group: image-scan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Same image the release workflow publishes.
+  PUBLISHED_IMAGE: tuantuantuantuantuan/observium:latest
+  # Pinned Trivy release, so a scan result does not change because the action
+  # default moved.
+  TRIVY_VERSION: v0.70.0
+
+jobs:
+  published-image:
+    name: Scan the published image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Scan ${{ env.PUBLISHED_IMAGE }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          # Multi-arch tag; Trivy scans the manifest for the runner's platform
+          # (linux/amd64). A finding that only affects linux/arm64 or
+          # linux/arm/v7 is not visible here.
+          image-ref: ${{ env.PUBLISHED_IMAGE }}
+          scan-type: image
+          format: sarif
+          output: trivy-published.sarif
+          # Report only: a stale base image must not fail the weekly run.
+          exit-code: '0'
+          severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Upload results to code scanning
+        if: always() && hashFiles('trivy-published.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-published.sarif
+          category: trivy-published-image
+
+      - name: Summarise findings
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "### Image scan: \`${PUBLISHED_IMAGE}\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -s trivy-published.sarif ]; then
+            echo "No SARIF report was produced; see the scan step above." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          total="$(jq '[.runs[]?.results[]?] | length' trivy-published.sarif)"
+          {
+            echo "This run is report-only and never fails on findings."
+            echo
+            echo "| Level | Findings |"
+            echo "| --- | --- |"
+            jq -r '
+              [.runs[]?.results[]? | (.level // "unknown")] | group_by(.)[]
+              | "| \(.[0]) | \(length) |"
+            ' trivy-published.sarif
+            echo
+            echo "Total: \`${total}\` finding(s). Details are in the Security tab (code scanning, category \`trivy-published-image\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  pull-request:
+    name: Scan the pull request build
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build the image
+        run: docker build --pull -t observium:scan .
+
+      - name: Scan observium:scan
+        id: scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: observium:scan
+          scan-type: image
+          format: sarif
+          output: trivy-pr.sarif
+          # Fails the job only when a fix exists: `ignore-unfixed` drops
+          # findings without a fixed version, and the severity filter keeps
+          # everything below CRITICAL out of the gate. Those are still uploaded
+          # to code scanning below, because Trivy writes the report before it
+          # exits non-zero.
+          severity: 'CRITICAL'
+          ignore-unfixed: true
+          exit-code: '1'
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Upload results to code scanning
+        if: always() && hashFiles('trivy-pr.sarif') != ''
+        # Fork pull requests have a read-only GITHUB_TOKEN, so code scanning
+        # upload is refused. That must not turn into a failed check: the gate is
+        # the scan step above.
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-pr.sarif
+          category: trivy-pr-image
+
+      - name: Summarise findings
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "### Pull request image scan"
+            echo
+            echo "Gate: CRITICAL findings with a fix available."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -s trivy-pr.sarif ]; then
+            echo "No SARIF report was produced; see the scan step above." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          jq -r '
+            [.runs[]?.results[]?] as $results
+            | if ($results | length) == 0 then
+                "No fixable CRITICAL findings."
+              else
+                ("| Vulnerability | Package / target | Severity score |",
+                 "| --- | --- | --- |",
+                 ($results[0:25][]
+                   | "| \(.ruleId) | \(.locations[0]?.physicalLocation?.artifactLocation?.uri // "unknown") | \(.properties["security-severity"] // "-") |"),
+                 "",
+                 "Total: \($results | length) finding(s); the full list is in the Security tab (code scanning, category `trivy-pr-image`).")
+              end
+          ' trivy-pr.sarif >> "$GITHUB_STEP_SUMMARY" || true

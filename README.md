@@ -295,9 +295,10 @@ Notes:
 | `OBSERVIUM_RAMDISK_SYNC_INTERVAL` | `300` | Seconds between RAM -> persistent sync |
 | `OBSERVIUM_SHM_SIZE` | `256m` (compose) | Container shared memory size |
 
-### MariaDB binary log toggle (compose)
+### MariaDB image and binary log (compose)
 | Variable | Default | Notes |
 |---|---|---|
+| `MARIADB_IMAGE` | `mariadb:11` | Database image; pin it (tag or digest) for a reproducible deployment, see [`docs/PINNING.md`](docs/PINNING.md) |
 | `MARIADB_BINLOG_OPTION` | `--skip-log-bin` | Set to `--log-bin` to enable binary log |
 
 ## Verify Runtime Status

@@ -60,6 +60,11 @@ jobs:
           # not need to be reachable at all.
           persist-credentials: false
 
+      # Deliberately no OBSERVIUM_VERSION build arg: a pull request build is
+      # not a release, so the image is left unstamped (org.observium.version is
+      # empty and /etc/observium-components has no observium line) rather than
+      # claiming a version nobody resolved. Only upstream-release.yml passes the
+      # upstream version it read from the tarball.
       - name: Build the image
         run: docker build -t observium:pr .
 

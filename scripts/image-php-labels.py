@@ -7,9 +7,16 @@ Usage:
 Example:
     scripts/image-php-labels.py tuantuantuantuantuan/observium latest
     scripts/image-php-labels.py tuantuantuantuantuan/observium latest org.observium.php.version
+    scripts/image-php-labels.py tuantuantuantuantuan/observium 2026.10.26 org.observium.version
 
 Prints one "<arch>\t<value>" line per platform in the manifest index. Only
 stdlib is used so it runs on a stock runner and on a workstation.
+
+The images this repository publishes bake two labels that are worth reading
+this way: org.observium.version (the upstream Observium release the image was
+built from) and org.observium.php.version (the sury PHP version installed on
+that platform). Without a <label-key> the value column is empty, which only
+lists the architectures.
 """
 
 import json

@@ -297,7 +297,9 @@ debian:13-slim
    |
    +-- final (from base)
                        COPY --from=observium-src, nginx/cron/entrypoint files,
-                       LABEL org.observium.php.version, VOLUME, EXPOSE 80,
+                       LABEL org.observium.php.version, LABEL
+                       org.observium.version (release builds only),
+                       VOLUME, EXPOSE 80,
                        HEALTHCHECK, ENTRYPOINT tini + entrypoint.sh
 ```
 
@@ -319,7 +321,10 @@ Details that matter operationally:
   reproducible deployments (see [PINNING.md](PINNING.md)).
 - **`/etc/php-version` and `/etc/observium-components`** record what was
   installed, and both are read back by the release notes, so published notes
-  describe the bytes users pull.
+  describe the bytes users pull. `/etc/observium-components` also carries an
+  `observium` line with the release version, and release builds set the
+  matching `org.observium.version` label, so a pinned digest can be traced to a
+  release. Local and pull request builds leave both unstamped on purpose.
 - **`.dockerignore`** excludes `.git`, `.github`, `README.md`, `compose.yaml`,
   `*.md`, `data`, `scripts` and `.DS_Store` from the build context.
 - **Runtime additions** in the final stage: the container nginx site

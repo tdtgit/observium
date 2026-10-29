@@ -14,8 +14,8 @@ stdlib is used so it runs on a stock runner and on a workstation.
 
 The images this repository publishes bake two labels that are worth reading
 this way: org.observium.version (the upstream Observium release the image was
-built from) and org.observium.php.version (the sury PHP version installed on
-that platform). Without a <label-key> the value column is empty, which only
+built from) and org.observium.php.version (the PHP version shipped on that
+platform). Without a <label-key> the value column is empty, which only
 lists the architectures.
 """
 

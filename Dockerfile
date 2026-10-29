@@ -1,13 +1,77 @@
 # syntax=docker/dockerfile:1.7
 
+# PHP comes from the official image: each patch release is published as one
+# index covering amd64, arm64 and arm/v7, so the platforms cannot drift within a
+# tag. The tag follows the 8.5 minor line, so the next build picks up the next
+# patch; the release workflow records which patch in org.observium.php.version.
+FROM php:8.5-fpm-trixie AS php
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Extensions the Debian php8.5-* packages provided and the official image does not.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      libfreetype6-dev \
+      libjpeg62-turbo-dev \
+      libonig-dev \
+      libpng-dev \
+      libzip-dev; \
+    docker-php-ext-configure gd --with-freetype --with-jpeg; \
+    docker-php-ext-install -j"$(nproc)" \
+      bcmath \
+      gd \
+      mbstring \
+      mysqli \
+      pdo_mysql \
+      shmop \
+      sockets; \
+    rm -rf /tmp/pear
+
+# sockets and shmop are reachable from the application and fail loudly without
+# them: messagebus_send() calls socket_create() unguarded
+# (includes/functions.inc.php), and PEAR's Net_DNS2 cache can use shmop.
+
+# Fixed URL plus a checksum: `pecl install` resolved a truncated tarball once
+# (15 KB of 94 KB) and would change silently between builds.
+ARG APCU_VERSION=5.1.28
+ARG APCU_SHA256=ca9c1820810a168786f8048a4c3f8c9e3fd941407ad1553259fb2e30b5f057bf
+
+RUN set -eux; \
+    curl -fsSL --retry 5 --retry-all-errors \
+      -o "/tmp/apcu-${APCU_VERSION}.tgz" "https://pecl.php.net/get/apcu-${APCU_VERSION}.tgz"; \
+    echo "${APCU_SHA256}  /tmp/apcu-${APCU_VERSION}.tgz" | sha256sum -c -; \
+    mkdir -p /tmp/apcu; \
+    tar -xzf "/tmp/apcu-${APCU_VERSION}.tgz" -C /tmp/apcu; \
+    cd "/tmp/apcu/apcu-${APCU_VERSION}"; \
+    phpize; \
+    ./configure --enable-apcu; \
+    make -j"$(nproc)"; \
+    make install; \
+    docker-php-ext-enable apcu; \
+    rm -rf /tmp/apcu "/tmp/apcu-${APCU_VERSION}.tgz"
+
+# Build-only leftovers: unused at runtime, and the tree is copied below.
+RUN set -eux; \
+    rm -rf /usr/local/lib/php/build \
+           /usr/local/lib/php/test \
+           /usr/local/include \
+           /usr/local/bin/phpize \
+           /usr/local/bin/php-config \
+           /usr/local/bin/pear \
+           /usr/local/bin/pecl \
+           /usr/local/lib/php/PEAR*
+
+
 FROM debian:13-slim AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG OBSERVIUM_DOWNLOAD_URL="https://www.observium.org/observium-community-latest.tar.gz"
 
-# PHP version resolved for this platform by the release workflow. The value is
-# referenced by the install layer below, so a new version invalidates that
-# layer instead of being served from the build cache.
+# PHP version resolved by the release workflow from the base image. The build
+# fails when the copied PHP disagrees, so the label cannot drift.
 ARG PHP_VERSION=""
 
 ENV OBSERVIUM_HOME=/opt/observium \
@@ -37,11 +101,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
-      gnupg \
-    && mkdir -p /etc/apt/keyrings \
-    && curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /etc/apt/keyrings/sury-php.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ trixie main" > /etc/apt/sources.list.d/sury-php.list \
-    && apt-get update \
     && apt-get -y dist-upgrade \
     && apt-get install -y --no-install-recommends \
       cron \
@@ -53,15 +112,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       mariadb-client \
       mtr-tiny \
       nginx \
-      php-pear \
-      php8.5-apcu \
-      php8.5-bcmath \
-      php8.5-cli \
-      php8.5-curl \
-      php8.5-fpm \
-      php8.5-gd \
-      php8.5-mbstring \
-      php8.5-mysql \
       procps \
       python-is-python3 \
       python3-mysqldb \
@@ -72,12 +122,42 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       tini \
       tzdata \
       whois \
-    && apt-get purge -y --auto-remove gnupg dirmngr \
-    && rm -rf /var/lib/apt/lists/* \
-    && installed="$(dpkg-query -W -f='${Version}' php8.5-cli)" \
-    && printf '%s\n' "${installed}" > /etc/php-version \
-    && printf 'debian\t%s\n' "$(cat /etc/debian_version)" > /etc/observium-components \
-    && dpkg-query -W -f='${Package}\t${Version}\n' \
+      libargon2-1 \
+      libcurl4t64 \
+      libfreetype6 \
+      libjpeg62-turbo \
+      libonig5 \
+      libpng16-16t64 \
+      libreadline8t64 \
+      libsodium23 \
+      libsqlite3-0 \
+      libssl3t64 \
+      libxml2 \
+      zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+# PHP from the stage above. The libraries it links against are apt packages, so
+# they stay under dpkg control; libcurl4t64 pulls gnutls, krb5, ldap, nghttp2...
+COPY --from=php /usr/local /usr/local
+
+# docker/observium.nginx.conf expects /run/php/php8.5-fpm.sock, the path the
+# Debian package used; point the official pool there and the nginx file is unchanged.
+RUN set -eux; \
+    mkdir -p /run/php; \
+    sed -ri 's#^;*listen = .*#listen = /run/php/php8.5-fpm.sock#; s#^;listen\.owner = .*#listen.owner = www-data#; s#^;listen\.group = .*#listen.group = www-data#; s#^;listen\.mode = .*#listen.mode = 0660#' \
+        /usr/local/etc/php-fpm.d/*.conf; \
+    php-fpm -t
+
+# The official image ships no active php.ini; the Debian package installed the
+# production one, so do the same.
+RUN cp /usr/local/etc/php/php.ini-production /usr/local/etc/php/php.ini
+
+RUN set -eux; \
+    installed="$(php -r 'echo PHP_VERSION;')"; \
+    printf '%s\n' "${installed}" > /etc/php-version; \
+    printf 'debian\t%s\n' "$(cat /etc/debian_version)" > /etc/observium-components; \
+    printf 'php\t%s\n' "${installed}" >> /etc/observium-components; \
+    dpkg-query -W -f='${Package}\t${Version}\n' \
          fping \
          graphviz \
          imagemagick \
@@ -86,30 +166,42 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
          mariadb-client \
          mtr-tiny \
          nginx \
-         php8.5-apcu \
-         php8.5-cli \
-         php8.5-fpm \
          rrdtool \
          snmp \
          whois \
-         >> /etc/observium-components \
-    && if [ -n "${PHP_VERSION}" ] && [ "${installed}" != "${PHP_VERSION}" ]; then \
-         echo "ERROR: php8.5-cli ${installed} was installed but PHP_VERSION=${PHP_VERSION} was requested" >&2; \
-         exit 1; \
-       fi
+         >> /etc/observium-components; \
+    if [ -n "${PHP_VERSION}" ] && [ "${installed}" != "${PHP_VERSION}" ]; then \
+      echo "ERROR: the base image ships PHP ${installed} but PHP_VERSION=${PHP_VERSION} was requested" >&2; \
+      exit 1; \
+    fi; \
+    php -m > /dev/null
 
 FROM base AS observium-src
 
 ARG OBSERVIUM_DOWNLOAD_URL="https://www.observium.org/observium-community-latest.tar.gz"
 
-RUN mkdir -p "${OBSERVIUM_HOME}" \
-    && curl -fsSL "${OBSERVIUM_DOWNLOAD_URL}" | tar -xz --strip-components=1 -C "${OBSERVIUM_HOME}"
+# ~200 MB from a rolling URL, cached per resolved release so rebuilds on this
+# builder (any platform) skip the download and a new release still fetches once.
+ARG OBSERVIUM_VERSION="latest"
+
+RUN --mount=type=cache,target=/var/cache/observium,sharing=locked \
+    set -eux; \
+    src="/var/cache/observium/observium-${OBSERVIUM_VERSION}.tar.gz"; \
+    if [ -s "${src}" ]; then \
+      echo "using cached ${src}"; \
+    else \
+      echo "downloading ${OBSERVIUM_DOWNLOAD_URL}"; \
+      curl -fsSL --retry 5 --retry-all-errors -o "${src}.part" "${OBSERVIUM_DOWNLOAD_URL}"; \
+      mv "${src}.part" "${src}"; \
+    fi; \
+    mkdir -p "${OBSERVIUM_HOME}"; \
+    tar -xzf "${src}" --strip-components=1 -C "${OBSERVIUM_HOME}"; \
+    ls -lh "${src}"
 
 FROM base
 
-# PHP version resolved for this platform at build time. The release workflow
-# passes the candidate available in the sury repository for the target
-# architecture; CI verifies the label against the version actually installed.
+# Re-declared because an ARG does not cross a FROM boundary; the base stage
+# already verifies this value against the binary it copied.
 ARG PHP_VERSION=""
 LABEL org.observium.php.version="${PHP_VERSION}"
 

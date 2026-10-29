@@ -85,7 +85,7 @@ configure_php_runtime() {
   mkdir -p /tmp/php-opcache
   chmod 1777 /tmp/php-opcache
 
-  cat > /etc/php/8.5/fpm/conf.d/99-observium-tuning.ini <<EOCFG
+  cat > /usr/local/etc/php/conf.d/99-observium-tuning.ini <<EOCFG
 memory_limit=${OBSERVIUM_PHP_MEMORY_LIMIT}
 opcache.enable=1
 opcache.enable_cli=1
@@ -94,7 +94,7 @@ apc.enable_cli=1
 apc.shm_size=${OBSERVIUM_APCU_SHM_SIZE}
 EOCFG
 
-  cp /etc/php/8.5/fpm/conf.d/99-observium-tuning.ini /etc/php/8.5/cli/conf.d/99-observium-tuning.ini
+  # One conf.d directory serves FPM and CLI, so no second copy is needed.
 }
 
 setup_rrd_ramdisk() {
@@ -442,7 +442,7 @@ create_default_dashboard() {
 
 start_php_fpm() {
   log "Starting php-fpm"
-  php-fpm8.5 -D
+  php-fpm -D
 }
 
 is_nginx_foreground() {

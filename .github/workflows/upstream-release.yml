@@ -140,6 +140,11 @@ jobs:
     env:
       IMAGE_NAME: tuantuantuantuantuan/observium
       OBSERVIUM_DOWNLOAD_URL: https://www.observium.org/observium-community-latest.tar.gz
+      # The upstream release this build contains, resolved by release-gate. It
+      # is stamped into the image as the org.observium.version label and as an
+      # observium line in /etc/observium-components, so an operator who pinned a
+      # digest can prove which release they are running.
+      OBSERVIUM_VERSION: ${{ needs.release-gate.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -190,6 +195,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=weekly-release-${{ matrix.platform_key }}
           build-args: |
             OBSERVIUM_DOWNLOAD_URL=${{ env.OBSERVIUM_DOWNLOAD_URL }}
+            OBSERVIUM_VERSION=${{ env.OBSERVIUM_VERSION }}
             PHP_VERSION=${{ steps.phpver.outputs.version }}
 
       - name: Verify PHP version in built image
@@ -624,6 +630,7 @@ jobs:
             // Component versions and per-platform digest, read from the
             // published image. PHP is just one component among them.
             const componentLabels = {
+              'observium': 'Observium',
               'debian': 'Debian',
               'nginx': 'Nginx',
               'php8.5-cli': 'PHP CLI',

@@ -19,6 +19,11 @@
 #     image and, when given, the expected version passed as the third argument
 #     (each source is compared when it is available; an image without the label
 #     still checks the argument, and vice versa);
+#   - the image carries an org.observium.version label naming the upstream
+#     Observium release. The literal "unknown" (and an empty value, which is
+#     what a local or pull request build produces) is accepted as unstamped;
+#     when the label names a version, the observium entry in
+#     /etc/observium-components must agree with it;
 #   - the PHP-FPM binary exists and is executable;
 #   - `nginx -t` passes with the configuration baked into the image;
 #   - the container entrypoint (/usr/local/bin/entrypoint.sh, from
@@ -46,6 +51,7 @@ expected_version="${3:-${EXPECTED_PHP_VERSION:-}}"
 FAILURES=0
 
 pass() { printf 'PASS  %s\n' "$*"; }
+skip() { printf 'SKIP  %s\n' "$*"; }
 fail() {
   printf 'FAIL  %s\n' "$*" >&2
   FAILURES=$((FAILURES + 1))
@@ -101,6 +107,8 @@ fi
 printf 'php-version=%s\n' "$(php -r 'echo PHP_VERSION;' 2>&1 | tr -d '\n')"
 printf 'php-int-size=%s\n' "$(php -r 'echo PHP_INT_SIZE;' 2>&1 | tr -d '\n')"
 printf 'php-machine=%s\n' "$(php -r 'echo php_uname("m");' 2>&1 | tr -d '\n')"
+printf 'observium-components-version=%s\n' \
+  "$(awk -F'\t' '$1 == "observium" { print $2 }' /etc/observium-components 2>/dev/null | tail -n 1)"
 
 if nginx -t >/tmp/nginx-t.log 2>&1; then
   printf 'nginx-test=ok\n'
@@ -163,6 +171,7 @@ php_cli="$(value_of php-cli)"
 php_version="$(value_of php-version)"
 php_int_size="$(value_of php-int-size)"
 php_machine="$(value_of php-machine)"
+obs_components="$(value_of observium-components-version)"
 nginx_test="$(value_of nginx-test)"
 php_fpm="$(value_of php-fpm)"
 entrypoint_executable="$(value_of entrypoint-executable)"
@@ -175,9 +184,12 @@ esac
 
 # --- PHP version matches the label / the requested version ------------------
 label=""
+obs_label=""
 container="$(docker create --platform "$platform" --entrypoint /bin/true "$image" 2>/dev/null || true)"
 if [ -n "$container" ]; then
   label="$(docker inspect --format '{{index .Config.Labels "org.observium.php.version"}}' \
+    "$container" 2>/dev/null || true)"
+  obs_label="$(docker inspect --format '{{index .Config.Labels "org.observium.version"}}' \
     "$container" 2>/dev/null || true)"
   docker rm -f "$container" >/dev/null 2>&1 || true
 fi
@@ -207,6 +219,28 @@ case "$php_version" in
       done <<EOF
 $expectations
 EOF
+    fi
+    ;;
+esac
+
+# --- Observium version label ------------------------------------------------
+# upstream-release.yml stamps the release it resolved; a local or pull request
+# build passes no value on purpose, so an empty or "unknown" label is reported
+# as unstamped instead of as a failure.
+case "$obs_label" in
+  '' | unknown)
+    if [ -n "$obs_components" ]; then
+      fail "org.observium.version is '${obs_label}' but /etc/observium-components records observium ${obs_components}"
+    else
+      pass "org.observium.version is unset (unstamped local/PR build)"
+    fi
+    ;;
+  *)
+    pass "org.observium.version is ${obs_label}"
+    if [ "$obs_components" = "$obs_label" ]; then
+      pass "/etc/observium-components records observium ${obs_components}"
+    else
+      fail "org.observium.version is ${obs_label} but /etc/observium-components records '${obs_components}'"
     fi
     ;;
 esac

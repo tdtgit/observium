@@ -13,6 +13,10 @@
 #   yaml        YAML parse of every workflow, .github/dependabot.yml, and
 #               compose.yaml
 #   compose     `docker compose config -q` when a Docker CLI is available
+#   pin-image   self-test of scripts/pin-image.sh in a temp directory (create,
+#               in-place update, idempotency, refusal of :latest and of a bare
+#               repository name) plus, when docker compose is available, that
+#               compose.pinned.example.yaml merges to the pinned digest
 #
 # Exits non-zero when any check fails. Skips are never a failure, so a laptop
 # without ShellCheck still gets a useful answer.
@@ -193,6 +197,109 @@ elif out="$(docker compose config -q 2>&1)"; then
 else
   printf '%s\n' "$out"
   fail "compose: docker compose config -q"
+fi
+
+# --- 6. pin-image self-test -------------------------------------------------
+# scripts/pin-image.sh and compose.pinned.example.yaml are the sanctioned way to
+# pin a deployment, and nothing here exercised them. Everything below runs in a
+# temp directory and never touches the network.
+pin_dir="$(mktemp -d "${TMPDIR:-/tmp}/check-static-pin.XXXXXX")"
+pin_problems=0
+pin_note() {
+  printf 'note  pin-image: %s\n' "$*"
+  pin_problems=$((pin_problems + 1))
+}
+
+# run_pin <args...> runs the tool from the temp directory, so a relative --file
+# behaves the way it does for an operator running it in their deployment copy.
+run_pin() { (cd "$pin_dir" && "$repo_root/scripts/pin-image.sh" "$@"); }
+
+pin_ref="tuantuantuantuantuan/observium:2026.10.26"
+pin_env="$pin_dir/.env"
+pin_checks="create, in-place update, idempotency, refusal of :latest and of a bare repository name"
+
+# 1. create: a fresh env file holds exactly the pinned line.
+if ! out="$(run_pin "$pin_ref" --file "$pin_env" 2>&1)"; then
+  pin_note "create failed: ${out}"
+elif [ "$(cat "$pin_env")" != "OBSERVIUM_IMAGE=${pin_ref}" ]; then
+  pin_note "create wrote '$(cat "$pin_env")' instead of OBSERVIUM_IMAGE=${pin_ref}"
+fi
+
+# 2. in-place update: the line is replaced where it stands, comments and other
+# variables survive, and duplicates are dropped.
+cat >"$pin_env" <<'EOF'
+# deployment settings
+OBSERVIUM_HTTP_PORT=8080
+OBSERVIUM_IMAGE=stale/image:2025.1
+OBSERVIUM_ADMIN_USER=admin
+OBSERVIUM_IMAGE=duplicate/image:2025.1
+EOF
+pin_expected="$pin_dir/expected"
+printf '# deployment settings\nOBSERVIUM_HTTP_PORT=8080\nOBSERVIUM_IMAGE=%s\nOBSERVIUM_ADMIN_USER=admin\n' \
+  "$pin_ref" >"$pin_expected"
+if ! run_pin "$pin_ref" --file "$pin_env" >/dev/null 2>&1; then
+  pin_note "in-place update failed"
+elif ! cmp -s "$pin_env" "$pin_expected"; then
+  pin_note "in-place update did not preserve the file: $(tr '\n' '|' <"$pin_env")"
+fi
+
+# 3. idempotency: a second identical run leaves the file byte-identical.
+cp "$pin_env" "$pin_dir/first-run"
+if ! run_pin "$pin_ref" --file "$pin_env" >/dev/null 2>&1; then
+  pin_note "second run failed"
+elif ! cmp -s "$pin_env" "$pin_dir/first-run"; then
+  pin_note "a second identical run changed the file: $(tr '\n' '|' <"$pin_env")"
+fi
+
+# 4. refusals: a :latest pin and a bare repository name (no tag, so :latest) are
+# both rejected, and a rejected pin must not rewrite the file.
+cp "$pin_env" "$pin_dir/before-refusals"
+if run_pin "tuantuantuantuantuan/observium:latest" --file "$pin_env" >/dev/null 2>&1; then
+  pin_note "a :latest pin was accepted"
+fi
+if run_pin "tuantuantuantuantuan/observium" --file "$pin_env" >/dev/null 2>&1; then
+  pin_note "a bare repository name (implicit :latest) was accepted"
+fi
+if ! cmp -s "$pin_env" "$pin_dir/before-refusals"; then
+  pin_note "a refused pin still rewrote the env file"
+fi
+
+# 5. a digest reference drops its tag: the digest alone decides which bytes run.
+pin_digest="sha256:$(printf '%064d' 0)"
+if ! run_pin "tuantuantuantuantuan/observium:2026.10.26@${pin_digest}" --file "$pin_env" >/dev/null 2>&1; then
+  pin_note "a repo:tag@sha256 reference was rejected"
+elif [ "$(sed -n 's/^OBSERVIUM_IMAGE=//p' "$pin_env")" != "tuantuantuantuantuan/observium@${pin_digest}" ]; then
+  pin_note "a digest reference did not drop its tag: $(sed -n 's/^OBSERVIUM_IMAGE=//p' "$pin_env")"
+fi
+
+# 6. compose.pinned.example.yaml must merge over compose.yaml and win, i.e. the
+# service the stack runs is the pinned repo@sha256 reference from that file.
+if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+  skip "pin-image: compose.pinned.example.yaml not verified (docker compose not available)"
+else
+  pin_checks="${pin_checks}, compose override"
+  pinned_ref="$(awk '/^[[:space:]]+image:/ { print $2; exit }' compose.pinned.example.yaml)"
+  case "$pinned_ref" in
+    *@sha256:*) ;;
+    *) pin_note "compose.pinned.example.yaml does not pin by digest: '${pinned_ref}'" ;;
+  esac
+  if ! out="$(docker compose -f compose.yaml -f compose.pinned.example.yaml config -q 2>&1)"; then
+    pin_note "docker compose config -q with the pinned override failed: ${out}"
+  else
+    merged_image="$(docker compose -f compose.yaml -f compose.pinned.example.yaml config 2>/dev/null |
+      awk '/^  [A-Za-z0-9_.-]+:$/ { service = $1; sub(/:$/, "", service) }
+           service == "observium" && $1 == "image:" { print $2; exit }')"
+    if [ "$merged_image" != "$pinned_ref" ]; then
+      pin_note "the merged compose config runs '${merged_image}' instead of the pinned '${pinned_ref}'"
+    fi
+  fi
+fi
+
+rm -rf "$pin_dir"
+if [ "$pin_problems" -ne 0 ]; then
+  fail "pin-image: self-test (${pin_problems} problem(s) above)"
+else
+  pass "pin-image: self-test (${pin_checks})"
 fi
 
 printf '\n%d failure(s), %d skipped\n' "$failures" "$skips"

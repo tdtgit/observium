@@ -122,8 +122,9 @@ each under its own license and copyright, none of it relicensed here:
 | Component | Where it comes from | License (as published by that project) |
 |---|---|---|
 | Debian 13 (`trixie`) userland | `debian:13-slim` | a mixture of free-software licenses, per package |
-| nginx | Debian / sury repositories | BSD-2-Clause |
-| PHP 8.5 and `php8.5-*` extensions | [sury](https://packages.sury.org/php) repository | PHP License 3.01 and the extensions' own licenses |
+| nginx | Debian repository | BSD-2-Clause |
+| PHP 8.5 | [`php:8.5-fpm-trixie`](https://hub.docker.com/_/php) image, built from php-src | PHP License 3.01 |
+| APCu and the PHP extensions built in the image stage | php-src / PECL | PHP License 3.01 and each extension's own license |
 | MariaDB server and client | `mariadb:11` image, `mariadb-client` package | GPL-2.0 |
 | RRDtool, Net-SNMP, fping, Graphviz, ImageMagick, ipmitool, mtr, whois | Debian repositories | each project's own license |
 | Trivy, actionlint, ShellCheck | CI only, never shipped in the image | Apache-2.0 / MIT / GPL-3.0 respectively |

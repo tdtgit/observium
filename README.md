@@ -326,19 +326,12 @@ Expected when enabled:
 
 ### Check the PHP version
 
-Each architecture may be on a different PHP patch release for a short window after an upstream release (the PHP repository publishes architectures independently), so check the version you actually run.
+PHP comes from the official `php:8.5-fpm-trixie` image, which publishes every architecture it supports from one index at the same moment, so all three platforms of a given tag ship the same PHP patch. Below is how to see the patch your deployment actually runs.
 
 One-shot, without starting the stack:
 
 ```bash
 docker run --rm --entrypoint php tuantuantuantuantuan/observium:latest -v
-```
-
-Exact package version, including the repository build suffix:
-
-```bash
-docker run --rm --entrypoint sh tuantuantuantuantuan/observium:latest -c \
-  'dpkg-query -W php8.5-cli php8.5-fpm php8.5-apcu'
 ```
 
 The build also records the resolved version in a file:
@@ -351,7 +344,7 @@ Running container:
 
 ```bash
 docker compose exec observium php -v
-docker exec <container> php-fpm8.5 -v
+docker exec <container> php-fpm -v
 ```
 
 To see which architecture your host pulled, and compare both:
@@ -388,12 +381,11 @@ unstamped: an empty label means "not a release", not "unknown release".
 
 ## Release Automation
 
-Five workflows build, validate, publish, scan and drill the image.
+Four workflows build, validate, publish, scan and drill the image.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
 | `upstream-release.yml` | weekly schedule, or manual dispatch | Resolves the upstream Observium version, builds `linux/amd64`, `linux/arm64`, and `linux/arm/v7`, pushes them by digest, boots the `linux/amd64` image with Compose as a smoke test, and only then creates the Docker tags plus the GitHub release |
-| `php-refresh.yml` | daily schedule, or manual dispatch | Compares the PHP version published in the image against the versions currently offered by the PHP repository, and triggers a release rebuild when they differ |
 | `pull-request.yml` | pull requests | Runs the static checks, then builds the pull request image and runs the same Compose smoke test against it |
 | `image-scan.yml` | weekly schedule, manual dispatch, pull requests | Scans the published image with Trivy and reports; pull request builds fail only on fixable `CRITICAL` findings |
 | `restore-drill.yml` | nightly schedule, manual dispatch | Builds the default branch and runs `scripts/restore-drill.sh`: two throwaway stacks, a documented dump and RRD archive in between, then assertions on schema, admin user, dashboards, device IDs, RRD files and login |
@@ -490,22 +482,21 @@ Creating a release also creates its git tag. GitHub will not let a workflow crea
 | `linux/arm64` | `arm64` | 64-bit ARM; preferred on ARM hardware |
 | `linux/arm/v7` | `armhf` | 32-bit ARM (Raspberry Pi 2/3 and other ARMv7 boards running a 32-bit OS) |
 
-Those are the architectures listed in the signed `trixie` `Release` of the [sury](https://packages.sury.org/php) PHP repository. Debian 13 also builds `i386`, `armel`, `ppc64el`, `riscv64`, and `s390x`, but the repository has no installable `php8.5-cli` for them (the `i386` index is frozen at PHP 8.5.0 and is not part of the signed `Release`), so this stack cannot build for those platforms. ARMv6 boards (`armel`, e.g. Raspberry Pi 1 and Zero) are therefore not supported.
+These are the platforms this repository builds and smoke-tests on every release. The official PHP image and Debian 13 both cover more (`i386`, `arm/v5`, `ppc64el`, `riscv64`, `s390x`), but they are not built or tested here, so they are not published.
 
 `linux/arm/v7` is a 32-bit userland, so PHP integers are 32-bit there, unlike the other two platforms (for example, timestamps stop fitting in a PHP integer in 2038). Use `linux/arm64` where the hardware supports it.
 
-### PHP version per architecture
+### PHP version across architectures
 
-The image installs PHP from the [sury](https://packages.sury.org/php) repository, which publishes each architecture independently. A newly released PHP patch therefore reaches `amd64` before `arm64` and `armhf`, and during that window the multi-arch tag is intentionally not version-identical across architectures: each architecture gets the newest release available for it.
+PHP is built in the official `php:8.5-fpm-trixie` image and copied from it. The official image is published as one multi-arch index, so a patch release becomes available for `amd64`, `arm64` and `arm/v7` at the same moment: a tag can never end up with one architecture on a newer patch than another, and there is no rebuild-once-per-architecture dance.
 
-Each build records the version it resolved:
+The tag tracks the `8.5` minor line, so a new patch is picked up by the next build rather than being frozen at the patch that existed when this branch was written. Each release records the patch it used:
 
 ```bash
-docker run --rm --entrypoint sh tuantuantuantuantuan/observium:latest -c \
-  'dpkg-query -W -f="\${binary:Package} \${Version}\n" "php8.5-*"'
+docker run --rm --entrypoint cat tuantuantuantuantuan/observium:latest /etc/php-version
+docker inspect -f '{{index .Config.Labels "org.observium.php.version"}}' \
+  tuantuantuantuantuan/observium@sha256:<digest>
 ```
-
-The same value is stored in the image label `org.observium.php.version`, which is what `php-refresh.yml` compares against the repository. Once the slower architecture catches up, the daily check detects the difference and rebuilds, so the tags converge automatically.
 
 ### Release note contents
 
@@ -521,16 +512,16 @@ so the note always describes the bytes that users pull.
 
 ### Overriding the release note
 
-When a release is not the usual automated one — for example an image rebuilt
-because the PHP repository published a new patch release for one architecture
-only — the prose part of the note can be overridden. A reason is mandatory and
+When a release is not the usual automated one — for example a rebuild that
+picks up a PHP patch published after the last image was built — the prose part
+of the note can be overridden. A reason is mandatory and
 is rendered in the release, so the deviation is always explained. See
 [`release-notes/README.md`](release-notes/README.md).
 
 ```bash
 gh workflow run upstream-release.yml --ref main \
-  -f release_notes="This image was rebuilt to pick up the arm64 PHP build." \
-  -f release_notes_reason="Republished to pick up the arm64 build of PHP 8.5.12."
+  -f release_notes="This image was rebuilt to pick up PHP 8.5.13." \
+  -f release_notes_reason="Republished to pick up PHP 8.5.13."
 ```
 
 ### Verify the database schema

@@ -180,7 +180,7 @@ read`, GitHub-hosted runners only):
 | Job | Proves |
 |---|---|
 | `release-gate` | whether publishing is needed, and the build tag |
-| `build` | all three platform images build, their PHP version matches the sury candidate, and their digests are recorded |
+| `build` | all three platform images build, the PHP patch inside each matches the base image and the label, and their digests are recorded |
 | `smoke` | the amd64 digest that is about to be tagged boots and works |
 | `arch-test` | the arm64 and armv7 digests execute under QEMU (see above) |
 | `push` | the multi-arch manifest is created only after all of the above |

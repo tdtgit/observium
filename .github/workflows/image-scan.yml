@@ -44,6 +44,8 @@ jobs:
           # amd64 only: findings limited to other architectures are not seen.
           image-ref: ${{ env.PUBLISHED_IMAGE }}
           scan-type: image
+          # vuln only: the secret scanner flags key-shaped text in upstream MIBs.
+          scanners: vuln
           format: sarif
           output: trivy-published.sarif
           exit-code: '0'
@@ -106,6 +108,8 @@ jobs:
         with:
           image-ref: observium:scan
           scan-type: image
+          # vuln only: the secret scanner flags key-shaped text in upstream MIBs.
+          scanners: vuln
           format: sarif
           output: trivy-pr.sarif
           # Gate: CRITICAL with a fix. The report is written before the

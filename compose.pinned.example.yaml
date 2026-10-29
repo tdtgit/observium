@@ -1,4 +1,5 @@
-# Example override that pins the observium image by digest.
+# Example override that pins the observium image by digest (and optionally the
+# database image, see the commented block at the end).
 #
 # Why a digest instead of a tag: a tag such as `:2026.10.26` is immutable, but
 # `:latest` and the `:{version}` tags are moved by the release workflow, and any
@@ -26,3 +27,13 @@
 services:
   observium:
     image: tuantuantuantuantuan/observium:2026.10.26@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+  # The database pin, commented out because compose.yaml's default is fine to
+  # start with. Uncomment both lines to pin it from this file instead of from
+  # .env, where the same pin is one line:
+  #   MARIADB_IMAGE=mariadb:11.8.9@sha256:0000…
+  # An override wins over .env, so keep the pin in one place. The zeroed digest
+  # is a placeholder like the one above: it does not exist, so a pull fails
+  # loudly until you paste the real one.
+  # db:
+  #   image: mariadb:11.8.9@sha256:0000000000000000000000000000000000000000000000000000000000000000

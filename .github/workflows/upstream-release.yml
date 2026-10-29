@@ -151,30 +151,36 @@ jobs:
         include:
           - platform: linux/amd64
             platform_key: linux-amd64
-            debian_arch: amd64
           - platform: linux/arm64
             platform_key: linux-arm64
-            debian_arch: arm64
           - platform: linux/arm/v7
             platform_key: linux-arm-v7
-            debian_arch: armhf
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Resolve PHP version for ${{ matrix.platform }}
-        id: phpver
-        run: |
-          version="$(scripts/sury-php-version.sh "${{ matrix.debian_arch }}")"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "PHP candidate for ${{ matrix.debian_arch }}: ${version}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+
+      - name: Resolve PHP version for ${{ matrix.platform }}
+        id: phpver
+        run: |
+          set -euo pipefail
+
+          # Same value on all three platforms, and read from the Dockerfile so
+          # the label still tells the truth when a patch lands mid-run.
+          base_image="$(awk '$1 == "FROM" && $2 ~ /^php:/ { print $2; exit }' Dockerfile)"
+          test -n "${base_image}"
+
+          version="$(docker run --rm --platform '${{ matrix.platform }}' --entrypoint php \
+            "${base_image}" -r 'echo PHP_VERSION;')"
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "PHP version in ${base_image} for ${{ matrix.platform }}: ${version}"
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
@@ -206,8 +212,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          actual="$(docker run --rm --platform "${PLATFORM}" --entrypoint dpkg-query \
-            "${IMAGE_NAME}@${IMAGE_DIGEST}" -W -f='${Version}' php8.5-cli)"
+          actual="$(docker run --rm --platform "${PLATFORM}" --entrypoint php \
+            "${IMAGE_NAME}@${IMAGE_DIGEST}" -r 'echo PHP_VERSION;')"
 
           echo "label:  ${PHP_VERSION}"
           echo "actual: ${actual}"
@@ -537,8 +543,8 @@ jobs:
               "${IMAGE_NAME}@${digest}" /etc/php-version 2>/dev/null || true)"
             if [ -z "${published}" ]; then
               # Images built before /etc/php-version was introduced.
-              published="$(docker run --rm --platform "${platform}" --entrypoint dpkg-query \
-                "${IMAGE_NAME}@${digest}" -W -f='${Version}' php8.5-cli)"
+              published="$(docker run --rm --platform "${platform}" --entrypoint php \
+                "${IMAGE_NAME}@${digest}" -r 'echo PHP_VERSION;')"
             fi
 
             expected="$(awk -F= '/^php-version=/{print $2}' "${info}")"
@@ -633,9 +639,7 @@ jobs:
               'observium': 'Observium',
               'debian': 'Debian',
               'nginx': 'Nginx',
-              'php8.5-cli': 'PHP CLI',
-              'php8.5-fpm': 'PHP-FPM',
-              'php8.5-apcu': 'APCu',
+              'php': 'PHP',
               'mariadb-client': 'MariaDB client',
               'rrdtool': 'RRDtool',
               'snmp': 'Net-SNMP',
@@ -671,7 +675,7 @@ jobs:
                       const [name, ...version] = line.split('\t');
                       return { name, version: version.join('\t') };
                     })
-                  : php ? [{ name: 'php8.5-cli', version: php }] : [];
+                  : php ? [{ name: 'php', version: php }] : [];
                 rows.push({ platform, phpVersion: published || phpVersion, digest, size, components, hasComponents });
               }
             }

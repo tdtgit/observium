@@ -8,7 +8,7 @@
 <!-- Check what you actually ran, not what you plan to run. -->
 
 - [ ] `bash -n docker/entrypoint.sh scripts/smoke-compose.sh`
-- [ ] `sh -n docker/db-entrypoint.sh scripts/sury-php-version.sh`
+- [ ] `sh -n docker/db-entrypoint.sh`
 - [ ] `docker compose config -q`
 - [ ] `docker build -t observium:dev .`
 - [ ] `scripts/smoke-compose.sh observium:dev`

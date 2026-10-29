@@ -22,10 +22,11 @@ The tags published by `upstream-release.yml` have different lifetimes (see
 
 Two things move underneath `latest`:
 
-- **New publications.** The release workflow runs weekly and is also triggered
-  by `php-refresh.yml` whenever the [sury](https://packages.sury.org/php) PHP
-  repository publishes a new patch level for any architecture. A deployment
-  that pulls `latest` upgrades itself the next time anyone runs
+- **New publications.** The release workflow runs weekly, publishes whenever
+  upstream Observium has released a new version, and can be dispatched by hand.
+  Every one of those builds can also carry a newer PHP patch, because the base
+  image tag `php:8.5-fpm-trixie` moves within the 8.5 line. A deployment that
+  pulls `latest` upgrades itself the next time anyone runs
   `docker compose pull`.
 - **Moving tags.** `:{version}` is repointed on every rebuild, so even pinning
   `26.1.14545` does not stay on the bytes you tested. As of this writing
@@ -34,10 +35,10 @@ Two things move underneath `latest`:
   the next rebuild.
 
 A rebuild does not reproduce the previous bytes even from the same commit: the
-base image (`debian:13-slim`) moves, the build runs `apt-get dist-upgrade`
-against the live Debian and sury repositories, and the application is downloaded
-from `https://www.observium.org/observium-community-latest.tar.gz`, a name that
-has no version and no checksum in it.
+base image (`debian:13-slim`) and the PHP base image move, the build runs
+`apt-get dist-upgrade` against live Debian mirrors, and the application is
+downloaded from `https://www.observium.org/observium-community-latest.tar.gz`,
+a name that has no version and no checksum in it.
 
 So there is no "rebuild it later and compare" story. The only thing that
 identifies the bytes is the **digest**, and the only way to keep the bytes is to
@@ -235,14 +236,14 @@ docker compose exec -T observium cat /etc/php-version
 ```
 
 `org.observium.php.version` is set by the final Dockerfile stage
-(`LABEL org.observium.php.version`) and records the `php8.5-cli` package
-version for **that architecture**, e.g.
+(`LABEL org.observium.php.version`) and records the PHP version copied into the
+image for **that architecture**, e.g.
 
 ```console
 $ python3 scripts/image-php-labels.py tuantuantuantuantuan/observium 2026.10.26 org.observium.php.version
-amd64	8.5.12-1+0~20261021.27+debian13~1.gbp1a3e8a
-arm	8.5.12-1+0~20261021.27+debian13~1.gbp1a3e8a
-arm64	8.5.12-1+0~20261021.27+debian13~1.gbp1a3e8a
+amd64	8.5.12
+arm	8.5.12
+arm64	8.5.12
 ```
 
 The image also carries `org.observium.version`, the Observium release the build
@@ -319,8 +320,9 @@ this repository's build reproducible, and it is worth being blunt about that.
 
 - **The build is not bit-for-bit reproducible.** Nothing about the pipeline
   produces the same digest twice: `FROM debian:13-slim` is a moving tag,
-  `apt-get -y dist-upgrade` runs against live mirrors, the sury repository is
-  not a pinned snapshot, and the application is fetched from
+  `apt-get -y dist-upgrade` runs against live mirrors, `php:8.5-fpm-trixie`
+  moves within the 8.5 line rather than being a pinned snapshot, and the
+  application is fetched from
   `observium-community-latest.tar.gz` with no version and no checksum. Rebuild
   the same commit tomorrow and you get a different digest with different
   package versions inside. A pin therefore cannot be "verified by rebuilding";
@@ -328,13 +330,11 @@ this repository's build reproducible, and it is worth being blunt about that.
 - **Base image and apt repositories move.** A rebuild picks up whatever
   `debian:13-slim` and the two repositories contain at that moment. Those are
   code changes you did not review, delivered under a new digest.
-- **PHP patch level differs per architecture, by design.** The sury repository
-  publishes architectures independently, so a fresh multi-arch build can ship
-  `arm64` or `armhf` a patch behind `amd64` under the *same* index digest. The
-  daily `php-refresh.yml` rebuild converges them later — as a new digest. If
-  version-identical PHP across architectures matters, pin a digest and check
-  `org.observium.php.version` per platform with `scripts/image-php-labels.py`
-  before rolling it out.
+- **The PHP patch level is whatever the base image had that day.** The official
+  image publishes all architectures from one index, so the three platforms of a
+  given digest always agree — but the patch itself moves between builds, and a
+  digest pinned today keeps the patch it was built with. To freeze it, pin the
+  digest; to advance it, take a newer build.
 - **The database image drifts unless you pin it too.** `compose.yaml` reads
   `MARIADB_IMAGE` (default `mariadb:11`, a moving tag), so pin it alongside the
   application image:

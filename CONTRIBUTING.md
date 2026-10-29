@@ -24,9 +24,8 @@ current `:latest` image, and include the image tag or digest you tested.
   `docker-compose` binary is not used).
 - Roughly 10 GB of free disk for the image, the build cache, and a test stack
   with its database and RRD data.
-- Network access during the build: Debian packages, PHP from the
-  [sury](https://packages.sury.org/php) repository, and the upstream Observium
-  tarball are fetched at build time.
+- Network access during the build: the PHP base image, Debian packages and the
+  upstream Observium tarball are fetched at build time.
 - Optional: `python3` (used by `scripts/smoke-compose.sh` to pick a free host
   port; without it the script falls back to port `18080`).
 
@@ -114,7 +113,7 @@ Compose file before pushing:
 
 ```bash
 bash -n docker/entrypoint.sh scripts/smoke-compose.sh
-sh -n docker/db-entrypoint.sh scripts/sury-php-version.sh
+sh -n docker/db-entrypoint.sh
 docker compose config -q
 ```
 
@@ -131,8 +130,8 @@ Shell scripts:
   that drive Docker or run inside the image (`docker/entrypoint.sh`,
   `scripts/smoke-compose.sh`).
 - Scripts that run in a minimal environment stay POSIX `#!/bin/sh`
-  (`docker/db-entrypoint.sh`, which the MariaDB image runs, and
-  `scripts/sury-php-version.sh`). Do not add bashisms to them.
+  (`docker/db-entrypoint.sh`, which the MariaDB image runs). Do not add
+  bashisms to them.
 - 2-space indent, quote variable expansions.
 - Non-obvious behaviour gets a long explanatory comment above it. The scripts
   encode real failure modes (schema import, `lower_case_table_names`, restart

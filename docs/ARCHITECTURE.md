@@ -22,7 +22,7 @@ flowchart LR
     user([browser]) -->|"host :8080 -> :80"| obs
 
     subgraph net["Compose project network (default bridge)"]
-        obs["observium<br/>Debian 13 + nginx + php8.5-fpm<br/>image: tuantuantuantuantuan/observium:latest"]
+        obs["observium<br/>Debian 13 + nginx + php-fpm 8.5<br/>image: tuantuantuantuantuan/observium:latest"]
         db["db<br/>mariadb:11<br/>no published ports"]
         obs -->|"mysqli on 3306<br/>after db healthcheck passes"| db
     end
@@ -38,7 +38,7 @@ flowchart LR
 +-----------------------------+          +-----------------------------+
 | observium (Debian 13)       |          | db (mariadb:11)             |
 |  nginx :80  -> :8080 host   |  MySQL   |  mariadbd :3306 (internal)  |
-|  php-fpm8.5 unix socket     |--------->|  datadir /var/lib/mysql     |
+|  php-fpm unix socket        |--------->|  datadir /var/lib/mysql     |
 |  cron: poller/discovery     |          |  healthcheck: mariadb-admin |
 |  /opt/observium             |          +--------------+--------------+
 |    rrd/    <- ./data/rrd    |                         |
@@ -171,7 +171,7 @@ With the default command, the order is:
    `status_summary`, `alert_boxes`, `eventlog`, `alertlog`), and points
    `users_prefs.dashboard_default` at it.
 
-8. **`start_php_fpm`** — `php-fpm8.5 -D`; nginx reaches it over the unix socket
+8. **`start_php_fpm`** — `php-fpm -D`; nginx reaches it over the unix socket
    `/run/php/php8.5-fpm.sock` ([`docker/observium.nginx.conf`](../docker/observium.nginx.conf)).
 
 9. **`start_cron_if_enabled`** — runs `cron` unless
@@ -283,17 +283,25 @@ Compose overrides several of them for the local stack.
 
 ## Build pipeline
 
-Three stages in one [Dockerfile](../Dockerfile):
+Four stages in one [Dockerfile](../Dockerfile):
 
 ```
+php:8.5-fpm-trixie
+   |
+   +-- php             extensions Observium needs (bcmath, gd, mbstring,
+   |                   mysqli, pdo_mysql, shmop, sockets) + APCu from a pinned
+   |                   URL and digest, build tooling pruned
+
 debian:13-slim
    |
-   +-- base            apt, sury PHP repository, PHP 8.5 + nginx + rrdtool +
-   |                   snmp + fping + graphviz + imagemagick + mariadb-client,
+   +-- base            apt, runtime libraries the copied PHP links against,
+   |                   nginx + rrdtool + snmp + fping + graphviz +
+   |                   imagemagick + mariadb-client,
+   |                   COPY --from=php /usr/local,
    |                   /etc/php-version, /etc/observium-components
    |
    +-- observium-src   curl <OBSERVIUM_DOWNLOAD_URL> | tar -xz --strip-components=1
-   |                   into /opt/observium
+   |                   into /opt/observium (tarball kept in a cache mount)
    |
    +-- final (from base)
                        COPY --from=observium-src, nginx/cron/entrypoint files,
@@ -305,13 +313,17 @@ debian:13-slim
 
 Details that matter operationally:
 
-- **PHP comes from [sury](https://packages.sury.org/php), not Debian.** The
-  keyring is fetched over HTTPS, the `trixie` suite is added, and `php8.5-*`
-  packages are installed. `ARG PHP_VERSION` (passed by the release workflow
-  from [`scripts/sury-php-version.sh`](../scripts/sury-php-version.sh)) is
-  verified against what apt actually installed — a mismatch fails the build
+- **PHP comes from the official [PHP image](https://hub.docker.com/_/php), not
+  from Debian.** `php:8.5-fpm-trixie` is built once per patch release and
+  published as a single index covering `amd64`, `arm64` and `arm/v7`, so the
+  three platforms cannot drift to different patches. Debian's 8.5 packages
+  compile some extensions the official image leaves out (`sockets`, `shmop`,
+  `gettext`, `pcntl`, …); the ones the application actually reaches are added
+  in the `php` stage, and `sockets`/`shmop` are the only two that matter.
+  `ARG PHP_VERSION` (resolved by the release workflow from the base image) is
+  verified against what the image actually runs — a mismatch fails the build
   instead of publishing a wrongly labelled image. The same value becomes the
-  `org.observium.php.version` label, which `php-refresh.yml` reads.
+  `org.observium.php.version` label.
 - **`dist-upgrade` runs inside the build**, so a rebuild can pick up Debian
   security updates even when nothing in this repository changed.
 - **The upstream tarball is `observium-community-latest.tar.gz`**, downloaded
@@ -350,7 +362,7 @@ Triggered weekly (`18 0 * * 5`) or by `workflow_dispatch` (optionally with
 | Job | What it does |
 |---|---|
 | `release-gate` | Logs in to Docker Hub; resolves the upstream version by streaming the tarball and reading `version.inc.php`; checks whether `tuantuantuantuantuan/observium:<version>` already exists; decides `should_publish` (a manual dispatch always publishes, a scheduled run only when the version tag is missing); resolves the build tag from the UTC date (`YYYY.MM.DD`, with `-2`, `-3`, … on collision) |
-| `build` | Matrix `linux/amd64`, `linux/arm64`, `linux/arm/v7`: resolves the sury PHP candidate for the Debian architecture, builds and pushes **by digest** with GHA cache, verifies the PHP version inside the built image against the label, records digest and compressed size as artifacts |
+| `build` | Matrix `linux/amd64`, `linux/arm64`, `linux/arm/v7`: resolves the PHP patch from the base image named in the Dockerfile (`docker run --entrypoint php … -r 'echo PHP_VERSION;'`), builds and pushes **by digest** with GHA cache, verifies the PHP version inside the built image against the label, records digest and compressed size as artifacts |
 | `arch-test` | Runs [`scripts/test-image-arch.sh`](../scripts/test-image-arch.sh) on arm64 and armv7: does PHP actually execute, is `PHP_INT_SIZE` correct, does `nginx -t` pass, is the entrypoint present |
 | `smoke` | Boots the amd64 digest with Compose via [`scripts/smoke-compose.sh`](../scripts/smoke-compose.sh): healthy containers, HTTP 200, no restart, no `ERROR` in the log, complete schema, working admin login, two devices added and removed with the real scripts, idempotent second start |
 | `push` | Only after `smoke` **and** `arch-test` pass: creates the multi-arch manifest for `:latest`, `:<upstream version>` and `:<build date>`, then inspects the pushed manifest |
@@ -359,24 +371,14 @@ Triggered weekly (`18 0 * * 5`) or by `workflow_dispatch` (optionally with
 So the ordering is *build → execute → publish*: nothing is tagged, and no
 release exists, until the amd64 image has been booted as a full stack.
 
-### 2. `php-refresh.yml` — daily
-
-Compares the `org.observium.php.version` label of the published image, per
-architecture, against what the sury repository currently offers
-([`scripts/sury-php-version.sh`](../scripts/sury-php-version.sh) and
-[`scripts/image-php-labels.py`](../scripts/image-php-labels.py)). When an
-architecture is behind and no release build is in progress, it dispatches
-`upstream-release.yml` on the default branch. This is why the tags converge
-after a PHP patch release reaches all architectures.
-
-### 3. `pull-request.yml` — every pull request
+### 2. `pull-request.yml` — every pull request
 
 Two jobs: `static` runs [`scripts/check-static.sh`](../scripts/check-static.sh)
 (`bash -n`, ShellCheck, actionlint at a pinned version, YAML parse,
 `docker compose config -q`); `verify` builds `observium:pr` from the pull
 request and runs the same smoke test the release uses.
 
-### 4. `image-scan.yml` — Trivy
+### 3. `image-scan.yml` — Trivy
 
 - Monday `37 4 * * 1` and manual: scans the published `:latest` image and
   **only reports** (SARIF to code scanning plus a job summary). A red weekly
@@ -386,7 +388,7 @@ request and runs the same smoke test the release uses.
   SARIF upload is allowed to fail, because fork pull requests get a read-only
   token — the scan step is the gate.
 
-### 5. Dependabot
+### 4. Dependabot
 
 Weekly, grouped pull requests for `github-actions` (every `uses:`) and
 `docker` (`FROM` lines and `compose.yaml` images), so action and base-image
@@ -447,13 +449,13 @@ to publish. Those secrets are never available to pull-request runs.
 | schema init (`discovery.php -u`) | logged `ERROR`, container keeps running with an incomplete schema | restart (the update is idempotent); see [UPGRADE_ROLLBACK.md](UPGRADE_ROLLBACK.md) |
 | `lower_case_table_names=2` | `Duplicate entry '0' for key 'PRIMARY'` after the first device | recreate `./data/db` (mode is only chosen at creation) and re-add devices |
 | admin user creation | login impossible | set `OBSERVIUM_ADMIN_PASSWORD` and recreate the container, or `./data/db` was initialised with a different admin; see [SECURITY_HARDENING.md](SECURITY_HARDENING.md) |
-| `php-fpm8.5` | nginx answers `502 Bad Gateway` | `docker compose logs observium`, `docker compose exec observium php-fpm8.5 -t` |
+| `php-fpm` | nginx answers `502 Bad Gateway` | `docker compose logs observium`, `docker compose exec observium php-fpm -t` |
 | nginx | image healthcheck fails, container restarts in a loop | `docker compose logs observium`, `docker compose exec observium nginx -t` |
 | cron | UI works, no graphs update | check `OBSERVIUM_ENABLE_CRON`, then `docker compose exec observium ps aux \| grep cron` |
 | RAM-disk sync loop | graphs on disk lag by up to the sync interval; a crash loses the last interval | inspect the interval setting; the persistent copy is the source of truth |
 | disk space on `./data` | MariaDB panics, RRD writes fail | free space, restart, verify with `docker compose ps` |
 | upstream tarball download | image build fails at the `observium-src` stage | retry; the URL is `OBSERVIUM_DOWNLOAD_URL` (build arg) |
-| sury repository / PHP install | image build fails, or `PHP_VERSION` verification fails the build | see [PINNING.md](PINNING.md); the release stops, nothing is published |
+| base PHP image / extension build | image build fails, or the `PHP_VERSION` verification fails the build | see [PINNING.md](PINNING.md); the release stops, nothing is published |
 | `smoke` or `arch-test` in the release | no tag, no manifest, no release for that build | fix and re-dispatch `upstream-release.yml` |
 | `DOCKERHUB_*` secret | release build cannot push | re-add the secret; the gate fails before anything is tagged |
 | `RELEASE_TOKEN` missing on a commit that changes workflows | manifest published, GitHub release refused by the API | re-run the release job with the token, or release from another commit |

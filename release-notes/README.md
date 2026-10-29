@@ -62,8 +62,8 @@ For an ad-hoc override, pass the same two values to a manual run:
 ```bash
 gh workflow run upstream-release.yml \
   --ref main \
-  -f release_notes="This image was rebuilt to pick up the arm64 PHP build." \
-  -f release_notes_reason="Republished to pick up the arm64 build of PHP 8.5.12."
+  -f release_notes="This image was rebuilt to pick up PHP 8.5.13." \
+  -f release_notes_reason="Republished to pick up PHP 8.5.13."
 ```
 
 A dispatch input takes precedence over the file in this directory, but it is
@@ -74,5 +74,7 @@ history.
 ## Rebuilding without a version change
 
 `workflow_dispatch` always publishes, so a manual run re-builds the image and
-adds a new date tag, plus a new release. The version tag moves with it. This is
-also how the automated PHP refresh (`php-refresh.yml`) behaves.
+adds a new date tag, plus a new release. The version tag moves with it. It is
+also the way to pick up a PHP patch published after the last build: the base
+image tag `php:8.5-fpm-trixie` moves within the 8.5 line, and nothing rebuilds
+automatically in between releases.

@@ -366,10 +366,13 @@ done
 
 ### Check installed component versions
 
-The image also records the versions of the main components it ships:
+The image also records the versions of the main components it ships, plus the
+Observium release it contains:
 
 ```bash
 docker run --rm --entrypoint cat tuantuantuantuantuan/observium:latest /etc/observium-components
+docker inspect -f '{{index .Config.Labels "org.observium.version"}}' \
+  tuantuantuantuantuan/observium@sha256:<digest>
 ```
 
 Running container:
@@ -378,9 +381,14 @@ Running container:
 docker compose exec observium cat /etc/observium-components
 ```
 
+`org.observium.version` and the `observium` line in `/etc/observium-components`
+are set by the release workflow from the tarball it downloaded, so a pinned
+digest traces back to a release. Local and pull request builds are deliberately
+unstamped: an empty label means "not a release", not "unknown release".
+
 ## Release Automation
 
-Four workflows build, validate, publish and scan the image.
+Five workflows build, validate, publish, scan and drill the image.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
@@ -388,6 +396,7 @@ Four workflows build, validate, publish and scan the image.
 | `php-refresh.yml` | daily schedule, or manual dispatch | Compares the PHP version published in the image against the versions currently offered by the PHP repository, and triggers a release rebuild when they differ |
 | `pull-request.yml` | pull requests | Runs the static checks, then builds the pull request image and runs the same Compose smoke test against it |
 | `image-scan.yml` | weekly schedule, manual dispatch, pull requests | Scans the published image with Trivy and reports; pull request builds fail only on fixable `CRITICAL` findings |
+| `restore-drill.yml` | nightly schedule, manual dispatch | Builds the default branch and runs `scripts/restore-drill.sh`: two throwaway stacks, a documented dump and RRD archive in between, then assertions on schema, admin user, dashboards, device IDs, RRD files and login |
 
 ### Smoke test before publishing
 

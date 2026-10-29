@@ -1,38 +1,19 @@
 name: image-scan
 
-# Container vulnerability scanning with Trivy.
-#
-# Two paths:
-#   * scheduled (weekly) — scans the image that is actually published to Docker
-#     Hub and only reports: findings land in GitHub code scanning and in the job
-#     summary, never in a red build. A red weekly job that nobody can act on is
-#     noise; the report is what is useful.
-#   * pull_request — builds the pull request and scans the result. Findings are
-#     reported the same way, and the job fails only on CRITICAL findings that
-#     have a fix available (that is a change the author can act on). Unfixable
-#     findings do not block a merge.
-#
-# SECURITY: like pull-request.yml this workflow builds and therefore executes
-# the contributor's Dockerfile. It uses `pull_request`, never
-# `pull_request_target`, so fork pull requests get a read-only GITHUB_TOKEN and
-# no repository secrets. No secrets are referenced here, nothing is pushed, and
-# nothing runs on a self-hosted runner.
+# Trivy scan of the published image (weekly, report only) and of pull request
+# builds (fails only on fixable CRITICAL findings). Like pull-request.yml this
+# builds the contributor's Dockerfile, so it uses pull_request and never
+# pull_request_target: no repository secrets, read-only token on forks.
 on:
   schedule:
-    # Mondays 04:37 UTC: rescan the current published image, which is rebuilt by
-    # the weekly release workflow on Fridays. Base-image findings appear even
-    # when nothing in this repository changed.
-    - cron: '37 4 * * 1'
+    # Fridays 07:00 UTC = 14:00 VNT, after the Friday 00:18 UTC release build.
+    - cron: '0 7 * * 5'
   pull_request:
     types: [opened, synchronize, reopened]
-  # Manual run: useful after a base image update or to re-check the published
-  # image without waiting for Monday.
   workflow_dispatch:
 
 permissions:
   contents: read
-  # Uploading SARIF to code scanning. Fork pull requests get a read-only token,
-  # so the upload step is allowed to fail there (see below).
   security-events: write
 
 concurrency:
@@ -40,11 +21,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Same image the release workflow publishes.
   PUBLISHED_IMAGE: tuantuantuantuantuan/observium:latest
-  # Pinned Trivy release, so a scan result does not change because the action
-  # default moved.
-  TRIVY_VERSION: v0.70.0
+  # Pinned so a scan result does not move with the action's default.
+  TRIVY_VERSION: v0.76.1
 
 jobs:
   published-image:
@@ -55,21 +34,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Scan ${{ env.PUBLISHED_IMAGE }}
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          # Multi-arch tag; Trivy scans the manifest for the runner's platform
-          # (linux/amd64). A finding that only affects linux/arm64 or
-          # linux/arm/v7 is not visible here.
+          # amd64 only: findings limited to other architectures are not seen.
           image-ref: ${{ env.PUBLISHED_IMAGE }}
           scan-type: image
+          # vuln only: the secret scanner flags key-shaped text in upstream MIBs.
+          scanners: vuln
           format: sarif
           output: trivy-published.sarif
-          # Report only: a stale base image must not fail the weekly run.
           exit-code: '0'
           severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
           version: ${{ env.TRIVY_VERSION }}
@@ -117,7 +95,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -130,13 +108,12 @@ jobs:
         with:
           image-ref: observium:scan
           scan-type: image
+          # vuln only: the secret scanner flags key-shaped text in upstream MIBs.
+          scanners: vuln
           format: sarif
           output: trivy-pr.sarif
-          # Fails the job only when a fix exists: `ignore-unfixed` drops
-          # findings without a fixed version, and the severity filter keeps
-          # everything below CRITICAL out of the gate. Those are still uploaded
-          # to code scanning below, because Trivy writes the report before it
-          # exits non-zero.
+          # Gate: CRITICAL with a fix. The report is written before the
+          # non-zero exit, so everything is still uploaded below.
           severity: 'CRITICAL'
           ignore-unfixed: true
           exit-code: '1'
@@ -144,9 +121,7 @@ jobs:
 
       - name: Upload results to code scanning
         if: always() && hashFiles('trivy-pr.sarif') != ''
-        # Fork pull requests have a read-only GITHUB_TOKEN, so code scanning
-        # upload is refused. That must not turn into a failed check: the gate is
-        # the scan step above.
+        # Refused on fork PRs (read-only token); the scan step is the gate.
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:

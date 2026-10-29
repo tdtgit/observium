@@ -432,53 +432,77 @@ the same idea as `scripts/smoke-compose.sh`, which boots the stack in a
 `mktemp -d` directory against an empty database so the real `./data` is never
 involved.
 
-```bash
-cd /path/to/observium
-DRILL="$(mktemp -d "${TMPDIR:-/tmp}/observium-restore.XXXXXX")"
-DUMP=/var/backups/observium/observium-20260101T020000.sql.gz
-RRD=/var/backups/observium/observium-rrd-20260101T020000.tar.gz
-PORT=18081
-
-cp compose.yaml "$DRILL/compose.yaml"
-cp -R docker "$DRILL/docker"
-mkdir -p "$DRILL/data/db" "$DRILL/data/rrd" "$DRILL/data/logs"
-
-compose=(docker compose --project-name observium-drill \
-  --project-directory "$DRILL" -f "$DRILL/compose.yaml")
-export OBSERVIUM_HTTP_PORT="$PORT"
-
-"${compose[@]}" up -d --wait db
-"${compose[@]}" exec -T db mariadb-admin ping -h 127.0.0.1 -uroot -pobservium-root
-gunzip -c "$DUMP" | "${compose[@]}" exec -T \
-  -e MYSQL_PWD="${OBSERVIUM_DB_PASSWORD:-observium}" db mariadb -uobservium observium
-tar -xzf "$RRD" -C "$DRILL"
-"${compose[@]}" up -d
-```
+The manual form of the drill is the procedure in this document run twice: once
+to create the state and take the backup, once to restore it into a fresh tree.
+`scripts/restore-drill.sh` automates exactly that, including the checks below,
+so the drill is a command instead of a checklist (see
+[Executable restore drill](#executable-restore-drill)).
 
 Notes that make this a drill and not an incident:
 
-- `--project-directory "$DRILL"` plus a distinct `--project-name` is what keeps
+- `--project-directory` plus a distinct `--project-name` is what keeps
   the drill containers and network out of the production project's namespace,
   so `down` on the drill cannot touch the real stack. Do not reuse the
   production project name for a second stack.
 - `cp -R docker` is required: `compose.yaml` bind-mounts
   `./docker/db-entrypoint.sh`, and Compose resolves that relative path against
   the directory of the compose file.
-- A different `OBSERVIUM_HTTP_PORT` avoids colliding with the running stack.
+- A different published port (a free one by default, or
+  `DRILL_HTTP_PORT_A`/`DRILL_HTTP_PORT_B`) avoids colliding with the running
+  stack.
 - The drill's `./data` is the throwaway directory's own tree. Never point a
   second project at the production `./data`.
 
 Then verify the drill the same way as a real restore (the `Q()` checks above,
-run against the drill project), and tear it down — in the same shell, so the
-`compose` array is still defined:
-
-```bash
-"${compose[@]}" down --remove-orphans
-rm -rf "$DRILL"
-```
+run against the drill project), and tear it down. `scripts/restore-drill.sh`
+does both, and tears the stacks down from an `EXIT` trap so a failed run
+cannot leave containers behind.
 
 Record the date and the device count of the last successful drill. A dump that
 has never been restored is worth nothing on the day you need it.
+
+## Executable restore drill
+
+`scripts/restore-drill.sh <image-ref> [--keep]` executes this procedure against
+a candidate image and fails on the first broken assertion. It never touches
+`./data`: both stacks run in their own `mktemp` directory with their own data
+tree, project name and published port, and the second stack is created after
+the first one has been torn down completely.
+
+What it proves, in order:
+
+- a device added through the real `add_device.php` path (against the
+  `scripts/snmpd` sidecar) and polled once produces the database rows and the
+  RRD directory to back up;
+- the documented `mariadb-dump --single-transaction --quick --routines
+  --triggers --events` backup is valid gzip, taken with the source
+  `@@lower_case_table_names` checked against the expected mode first;
+- a tar of `data/rrd` restores into a fresh tree, and the dump restores into a
+  new, empty database in a second throwaway stack;
+- after the restore the schema is complete (`devices.device_id` is
+  `AUTO_INCREMENT`), the admin user exists exactly once, the default dashboard
+  and its widgets are back, the device row keeps its original `device_id`, its
+  RRD file exists and `rrdtool info` reads it, and a login through the web UI
+  succeeds.
+
+The drill is what tells you the backup is restorable; the cron script in the
+next section only tells you it ran.
+
+It runs nightly against an image built from the default branch in
+[`restore-drill.yml`](../.github/workflows/restore-drill.yml), which uploads
+the log when the drill fails. To run it yourself, for example against a
+candidate image before an upgrade:
+
+```bash
+cd /path/to/observium
+docker build -t observium:candidate .   # or: docker pull the release tag
+scripts/restore-drill.sh observium:candidate
+```
+
+Add `--keep` to leave the throwaway directory (and both stacks' logs) in place
+for inspection; without it everything is removed on exit, whether the drill
+passed or failed. `DRILL_HTTP_PORT_A` and `DRILL_HTTP_PORT_B` set the two
+published ports when the defaults are in use.
 
 ## Automation and retention
 
@@ -554,5 +578,5 @@ Rules for the script and the schedule:
   A backup on the same disk as the datadir does not survive that disk.
 - The dump requires the `db` service to be running. If the stack is down, take a
   cold backup (`docker compose stop` is a no-op then, and tar of `./data` works).
-- Run the drill above against one of the archives at least monthly; the cron
-  script cannot tell you whether a restore works.
+- Run the drill above at least monthly; the cron script cannot tell you whether
+  a restore works, and neither can a green backup job.

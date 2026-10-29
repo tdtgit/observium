@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: Observium Community Edition (upstream)
     url: https://www.observium.org
-    about: Application bugs, polling issues, device support and Observium features belong upstream, not to this Docker packaging repository.
+    about: Application bugs, polling issues, device support, and Observium features belong upstream, not to this Docker packaging repository.
   - name: Report a security vulnerability
     url: https://github.com/tdtgit/observium/security/advisories/new
-    about: Report vulnerabilities privately through GitHub security advisories instead of opening a public issue.
+    about: Report vulnerabilities privately through GitHub security advisories. Do not open a public issue.

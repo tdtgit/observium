@@ -1,11 +1,12 @@
 # Pin a deployment to an exact image
 
-`compose.yaml` deploys `${OBSERVIUM_IMAGE:-tuantuantuantuantuan/observium}`.
-With nothing set, that is `tuantuantuantuantuan/observium:latest`, and the
-image reference is the one part of the stack that is not pinned: every setting
-in the file has a default you can review, the image has a tag that moves.
+`compose.yaml` deploys `${OBSERVIUM_IMAGE:-tuantuantuantuantuan/observium}` and
+`${MARIADB_IMAGE:-mariadb:11}`. With nothing set, those are
+`tuantuantuantuantuan/observium:latest` and `mariadb:11`, and the image
+references are the one part of the stack that is not pinned: every setting in
+the file has a default you can review, the image tags move.
 
-This guide covers how to replace that tag with an immutable reference, how to
+This guide covers how to replace those tags with immutable references, how to
 verify what is actually running, and what a pin still does not guarantee.
 
 ## Why `latest` is not reproducible
@@ -156,10 +157,17 @@ The script:
 - refuses `:latest` and a bare repository name, because "pin to whatever is
   newest" is what this is supposed to stop — `--allow-latest` overrides that
   deliberately;
-- replaces the existing `OBSERVIUM_IMAGE` line in place, keeps comments and
-  every other line, never writes a second copy, and is idempotent;
+- replaces the existing `OBSERVIUM_IMAGE` (and `MARIADB_IMAGE` when `--db` or
+  `--all` is used) line in place, keeps comments and every other line, never
+  writes a second copy, and is idempotent;
 - creates the file with mode `600` when it does not exist, so credentials you
   keep in the same file are not world readable;
+- `--db <reference>` pins the database image instead of, or as well as, the
+  application image, and refuses `:latest` and a bare repository name for the
+  same reason;
+- `--all <observium-reference> <database-reference>` pins both in one run
+  (`--all` also accepts the database reference via `--db`), and resolves both
+  tags to digests when combined with `--digest`;
 - `--file <path>` writes to another file (e.g. `.env.production`);
 - `--digest` needs `docker buildx` and fails instead of silently falling back
   to the tag when resolution fails.
@@ -170,7 +178,8 @@ The script:
 ### Option B: a compose override
 
 Copy [`compose.pinned.example.yaml`](../compose.pinned.example.yaml) — it pins
-`observium` by digest and changes nothing else:
+`observium` by digest and changes nothing else (it also carries a commented
+`db` pin; uncomment that to pin the database image from the same file):
 
 ```bash
 cp compose.pinned.example.yaml compose.pinned.yaml
@@ -225,9 +234,9 @@ docker compose exec -T observium cat /etc/observium-components
 docker compose exec -T observium cat /etc/php-version
 ```
 
-`org.observium.php.version` is the only label this image sets
-(`LABEL org.observium.php.version` in the final Dockerfile stage). Its value is the
-`php8.5-cli` package version for **that architecture**, e.g.
+`org.observium.php.version` is set by the final Dockerfile stage
+(`LABEL org.observium.php.version`) and records the `php8.5-cli` package
+version for **that architecture**, e.g.
 
 ```console
 $ python3 scripts/image-php-labels.py tuantuantuantuantuan/observium 2026.10.26 org.observium.php.version
@@ -236,9 +245,27 @@ arm	8.5.12-1+0~20261021.27+debian13~1.gbp1a3e8a
 arm64	8.5.12-1+0~20261021.27+debian13~1.gbp1a3e8a
 ```
 
-There is **no Observium version label** on the image. `/etc/observium-components`
-also does not record it. For "which Observium release is this", the answers are
-the release page (tags and digest) and the digest you deployed — not a label.
+The image also carries `org.observium.version`, the Observium release the build
+was stamped with, and records the same value as a final `observium\t<version>`
+line in `/etc/observium-components`:
+
+```bash
+docker inspect -f '{{index .Config.Labels "org.observium.version"}}' \
+  tuantuantuantuantuan/observium:<date-tag>
+# 25.4.0   (the empty string on a local or pull request build)
+
+docker run --rm --entrypoint cat \
+  tuantuantuantuantuan/observium:<date-tag> /etc/observium-components
+# … one component per line, then: observium	25.4.0
+```
+
+`upstream-release.yml` stamps both from the release-gate version. Local and
+pull request builds are deliberately unstamped: the label is the empty string
+and the components file has no `observium` line, so empty means "not a
+release", not "unknown version". Checking the label is how a human confirms a
+digest is the release it claims to be without a signature; see
+[What pinning does not fix](#what-pinning-does-not-fix) for what that does and
+does not prove.
 
 If the digest in `config --images` and the image ID of the running container do
 not match what you pinned, the container was not recreated yet:
@@ -313,17 +340,30 @@ this repository's build reproducible, and it is worth being blunt about that.
   application image:
 
   ```bash
-  MARIADB_IMAGE=mariadb:11.8.9@sha256:…   # or the digest alone
+  # both at once, from two references
+  scripts/pin-image.sh --all tuantuantuantuantuan/observium:2026.10.26 mariadb:11.8.9
+
+  # both tags resolved to their index digests
+  scripts/pin-image.sh --all tuantuantuantuantuan/observium:2026.10.26 mariadb:11.8.9 --digest
+
+  # database only
+  scripts/pin-image.sh --db mariadb:11.8.9
   ```
 
-  `scripts/pin-image.sh` only writes `OBSERVIUM_IMAGE`, so add this line to the
-  same `.env` by hand (or put `db.image` in an override file).
+  `--all` writes one `OBSERVIUM_IMAGE=` and one `MARIADB_IMAGE=` line into the
+  same `.env`, and `--db` writes only `MARIADB_IMAGE`, with the same in-place,
+  idempotent, mode-`600` behaviour as the application pin. `--db` refuses
+  `:latest` and a bare repository name for the same reason. An override file
+  that sets `db.image` pins it the same way.
 - **Pinning is not provenance verification.** Digests are content addressed, so
   a digest cannot be repointed at different bytes, but nothing here verifies
   *who* built those bytes: there is no signature check and no verification of
-  the build attestation manifests in the index. Anyone who can push to the
-  repository can publish a new digest; only a human comparing
-  `org.observium.php.version`, the release page and the digest catches that.
+  the build attestation manifests in the index. The `org.observium.version`
+  label makes the manual check cheap — inspect it and compare it with the
+  release you meant to run — but it is stamped by the same pipeline that built
+  the image, so it records intent, not proof. Anyone who can push to the
+  repository can publish a new digest with any label; comparing the label, the
+  release page and the digest is still a human step.
 - **A pinned tag can still be deleted.** `:{date}` tags are immutable in the
   sense that they are never repointed, not that they are guaranteed to exist
   forever. The digest stays pullable as long as the registry keeps the blobs.
@@ -334,3 +374,4 @@ this repository's build reproducible, and it is worth being blunt about that.
 - [README: Release Automation](../README.md#release-automation) — when a new image is published.
 - [`docs/UPGRADE_ROLLBACK.md`](UPGRADE_ROLLBACK.md) — upgrading and rolling back the stack, including the database.
 - [`scripts/smoke-compose.sh`](../scripts/smoke-compose.sh) — boot a candidate image (`scripts/smoke-compose.sh tuantuantuantuantuan/observium@sha256:…`) in a throwaway directory before you pin it.
+- [`scripts/check-static.sh`](../scripts/check-static.sh) — section 6 self-tests `scripts/pin-image.sh` in a temp directory (create, in-place update, idempotency, refusals, compose override merge) on every static run.

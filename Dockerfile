@@ -113,13 +113,25 @@ FROM base
 ARG PHP_VERSION=""
 LABEL org.observium.php.version="${PHP_VERSION}"
 
+# Upstream Observium release contained in this image, resolved by the release
+# workflow from the tarball it downloads. Re-declared here because an ARG does
+# not cross a FROM boundary, and referenced by the layer below so a new release
+# invalidates it instead of being served from the build cache. Local and pull
+# request builds pass no value: they are not releases, so the label stays empty
+# and /etc/observium-components gains no observium line.
+ARG OBSERVIUM_VERSION=""
+LABEL org.observium.version="${OBSERVIUM_VERSION}"
+
 COPY --from=observium-src /opt/observium /opt/observium
 
 RUN mkdir -p "${OBSERVIUM_HOME}" \
     && mkdir -p "${OBSERVIUM_HOME}/logs" "${OBSERVIUM_HOME}/rrd" \
     && chown -R www-data:www-data "${OBSERVIUM_HOME}/logs" "${OBSERVIUM_HOME}/rrd" \
     && sed -i 's|^mibs :$|mibs : /opt/observium/mibs/rfc:/opt/observium/mibs/net-snmp|' /etc/snmp/snmp.conf \
-    && rm -f /etc/nginx/sites-enabled/default
+    && rm -f /etc/nginx/sites-enabled/default \
+    && if [ -n "${OBSERVIUM_VERSION}" ]; then \
+         printf 'observium\t%s\n' "${OBSERVIUM_VERSION}" >> /etc/observium-components; \
+       fi
 
 COPY docker/observium.nginx.conf /etc/nginx/conf.d/observium.conf
 COPY docker/observium.cron /etc/cron.d/observium

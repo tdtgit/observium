@@ -1,0 +1,80 @@
+name: restore-drill
+
+# Executes the backup/restore procedure in docs/BACKUP_RESTORE.md instead of
+# trusting it: boot a stack, add a device, take the documented dump and RRD
+# tar, tear everything down, restore into a fresh stack and verify the result.
+# See scripts/restore-drill.sh.
+#
+# SECURITY: like pull-request.yml this workflow builds and therefore runs the
+# repository's Dockerfile, docker/ scripts and compose.yaml. It only runs on a
+# schedule and on workflow_dispatch, so the code is always the default branch
+# (or the ref a maintainer picked), never a fork pull request. It needs no
+# secrets, pushes nothing, and runs on a GitHub-hosted ephemeral runner, so it
+# gets the default read-only token and nothing more.
+on:
+  schedule:
+    # Nightly 02:23 UTC: off-peak, and clear of the Monday 04:37 image scan,
+    # the Friday 00:18 weekly release and the daily 06:41 PHP refresh. The
+    # drill builds the image from the default branch, so it also catches a
+    # restore regression the day after a merge instead of after a release.
+    - cron: '23 2 * * *'
+  # Manual run: useful before cutting a release, or to re-check a changed
+  # entrypoint or compose file without waiting for the night.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: restore-drill-${{ github.ref }}
+  # A drill takes minutes and writes nothing shared, but a queued run that
+  # starts after the next one has begun is worthless, so keep at most one.
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    name: Restore drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Keep the token out of .git/config, which the build and the
+          # container scripts can read.
+          persist-credentials: false
+
+      - name: Build the image
+        run: docker build -t observium:drill .
+
+      - name: Run the restore drill
+        # One real backup and one real restore, both in throwaway Compose
+        # projects under a temp directory. The script prints the assertions it
+        # runs, the failing stack's `compose ps` and logs, and only then a
+        # `[drill] PASS:` line. Tee keeps that output for the failure artifact.
+        run: |
+          set -o pipefail
+          scripts/restore-drill.sh observium:drill 2>&1 | tee restore-drill.log
+
+      - name: Upload the drill log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: restore-drill-log
+          path: restore-drill.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Write summary
+        if: always()
+        run: |
+          {
+            echo "### Restore drill"
+            echo
+            echo "Image: \`observium:drill\` built from \`${GITHUB_SHA}\`"
+            echo
+            echo "Result: \`${{ job.status }}\`"
+            echo
+            echo "The log is attached as \`restore-drill-log\` when the drill fails."
+          } >> "$GITHUB_STEP_SUMMARY"

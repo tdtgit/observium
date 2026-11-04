@@ -26,6 +26,9 @@
 # ignored for resolution: the digest alone decides which bytes run.
 services:
   observium:
+    # A tag alone also works if you only need "not latest", but the version tag
+    # moves on rebuild and only {date} is frozen: .../observium:26.1.14545 vs
+    # .../observium:2026.10.26. Pin the digest when it has to stay put.
     image: tuantuantuantuantuan/observium:2026.10.26@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
   # The database pin, commented out because compose.yaml's default is fine to

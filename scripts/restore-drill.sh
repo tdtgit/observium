@@ -84,6 +84,26 @@ project_b="observium-drill-b-$$"
 
 log() { printf '[drill] %s\n' "$*"; }
 
+# Remove a directory tree, including files a container wrote as root.
+#
+# Observium and MariaDB run as root inside the containers, so everything they
+# create under the bind-mounted ./data belongs to root on the host. Docker
+# Desktop maps that back to the local user; a Linux runner does not, and there
+# an unprivileged `rm -rf` fails with "Permission denied" on every RRD file and
+# database page. The fallback empties the tree from a container, where the uid
+# that created the files can delete them.
+rm_tree() {
+  local dir="$1"
+  [ -e "$dir" ] || return 0
+  rm -rf "$dir" 2>/dev/null && return 0
+  if docker image inspect "$image" >/dev/null 2>&1; then
+    docker run --rm --user 0:0 --entrypoint sh -v "${dir}:/target" "$image" \
+      -c 'rm -rf /target/* /target/.[!.]* /target/..?*' >/dev/null 2>&1 || true
+  fi
+  rm -rf "$dir" 2>/dev/null
+  [ ! -e "$dir" ]
+}
+
 active_stack=""
 
 # A small read-only SNMP agent (scripts/snmpd/) stands in for a monitored host,
@@ -165,7 +185,7 @@ cleanup() {
   elif [ "$status" -ne 0 ] && [ "${DRILL_KEEP_ON_FAILURE:-0}" = "1" ]; then
     log "Keeping ${workdir} because the drill failed"
   else
-    rm -rf "$workdir" 2>/dev/null || log "Could not remove ${workdir} (root-owned files); it is temporary"
+    rm_tree "$workdir" || log "Could not remove ${workdir}; it is temporary"
   fi
 }
 trap cleanup EXIT
@@ -345,7 +365,7 @@ compose_a down --volumes --remove-orphans --timeout 20 >/dev/null \
 [ -z "$(compose_a ps -a -q 2>/dev/null)" ] || fail "stack A still has containers after down"
 # The data tree is gone as well: stack B must not be able to read it.
 if [ "$keep" != "--keep" ]; then
-  rm -rf "$stack_a/data"
+  rm_tree "$stack_a/data" || fail "could not remove the stack A data tree"
 fi
 
 # --- stack B: restore into a fresh tree -------------------------------------
